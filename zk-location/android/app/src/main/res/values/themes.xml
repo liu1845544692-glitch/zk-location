@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+文件功能：
+- Android Activity 基础主题资源。
+
+执行流程：
+1. AndroidManifest.xml 将 Theme.MoproApp 绑定到 application/activity。
+2. Compose 进入后由 MainScreen 中的 MaterialTheme 接管具体 UI 配色。
+-->
+<resources>
+
+    <!-- Theme.MoproApp：无 ActionBar 的浅色基础主题，适配 Compose 全屏内容。 -->
+    <style name="Theme.MoproApp" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>

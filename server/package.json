@@ -1,0 +1,16 @@
+{
+  "name": "zk-location-verifier",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/server.js",
+    "export:vk": "mkdir -p keys && snarkjs zkey export verificationkey ../circuits/areajudge_final.zkey keys/areajudge_verification_key.json",
+    "logs": "node scripts/tail-interactions.js",
+    "smoke": "node scripts/smoke-verify.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "snarkjs": "^0.7.5"
+  }
+}

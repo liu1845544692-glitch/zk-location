@@ -1,0 +1,17 @@
+# 文件功能：
+# - mopro 构建配置，声明当前只构建 Circom adapter 的 Android release 产物。
+#
+# 执行流程：
+# 1. mopro build 读取 build_mode、target_adapters 和 target_platforms。
+# 2. 根据 android ABI 列表生成 x86_64 与 arm64 native library。
+# 3. auto_update=false 避免构建时自动改动模板依赖。
+build_mode = "release"
+target_adapters = ["circom"]
+target_platforms = ["android"]
+android = [
+    "x86_64-linux-android",
+    "aarch64-linux-android",
+]
+auto_update = false
+
+[update]

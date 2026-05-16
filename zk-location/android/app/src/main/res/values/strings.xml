@@ -1,0 +1,4 @@
+<resources>
+    <!-- app_name：Android launcher 和 Activity 标题显示名称。 -->
+    <string name="app_name">MoproApp</string>
+</resources>

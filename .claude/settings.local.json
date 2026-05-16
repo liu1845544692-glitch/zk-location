@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo build *)",
+      "Bash(npm test *)",
+      "Bash(cargo test *)",
+      "Bash(node scripts/smoke-verify.js)",
+      "Bash(node *)"
+    ]
+  }
+}

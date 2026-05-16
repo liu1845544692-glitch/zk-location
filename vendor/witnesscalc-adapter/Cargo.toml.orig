@@ -1,0 +1,18 @@
+[package]
+name = "witnesscalc-adapter"
+version = "0.1.7"
+edition = "2021"
+description = "Library to run witnesscalc in rust"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/zkmopro/witnesscalc_adapter"
+documentation = "https://zkmopro.org/"
+homepage = "https://zkmopro.org/"
+
+[dependencies]
+num-bigint = "0.4.6"
+num-traits = "0.2.19"
+paste = "1.0.0"
+serde_json = "1.0.135"
+anyhow = "1.0.95"
+
+[lib]

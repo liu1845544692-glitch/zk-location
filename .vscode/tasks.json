@@ -1,0 +1,23 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Proxy: Auto Configure",
+      "type": "shell",
+      "command": "bash",
+      "args": [
+        "scripts/vscode-proxy-autoset.sh"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "Proxy: Self Check",
+      "type": "shell",
+      "command": "bash",
+      "args": [
+        "scripts/vscode-proxy-check.sh"
+      ],
+      "problemMatcher": []
+    }
+  ]
+}

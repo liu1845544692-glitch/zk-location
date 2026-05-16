@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?><!--
+   文件功能：
+   - Android full backup 规则占位文件。
+   执行流程：
+   1. AndroidManifest.xml 通过 android:fullBackupContent 引用。
+   2. 当前没有显式 include/exclude，保持系统默认行为。
+
+   Sample backup rules file; uncomment and customize as necessary.
+   See https://developer.android.com/guide/topics/data/autobackup
+   for details.
+   Note: This file is ignored for devices older that API 31
+   See https://developer.android.com/about/versions/12/backup-restore
+-->
+<full-backup-content>
+    <!--
+   <include domain="sharedpref" path="."/>
+   <exclude domain="sharedpref" path="device.xml"/>
+-->
+</full-backup-content>

@@ -1,0 +1,20 @@
+# 文件功能：
+# - h3-converter crate 的 Cargo 配置。
+# - 该 crate 负责 GNSS -> H3 边界 -> 全局定点坐标 -> Poseidon commitment 的预处理。
+#
+# 执行流程：
+# 1. zk-location 主 crate 通过 path dependency 引用本 crate。
+# 2. Android/Rust 测试调用 src/lib.rs 导出的 generate_circuit_input 等函数。
+[package]
+name = "h3-converter"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ark-bn254 = "0.5"
+ark-ff = "0.5"
+getrandom = "0.2"
+h3o = "0.7"
+light-poseidon = "0.4"
+num-bigint = "0.4"
+serde_json = "1.0"

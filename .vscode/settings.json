@@ -1,0 +1,4 @@
+{
+  "http.proxySupport": "off",
+  "http.systemCertificates": true
+}
