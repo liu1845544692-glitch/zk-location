@@ -32,6 +32,7 @@ const {
   createInteractionLogger,
   requestMeta,
   summarizeKeyRegistration,
+  summarizeKeyRegistrationRequest,
   summarizeProofRequest,
   summarizeVerifyResponse,
 } = require("./interaction-logger");
@@ -257,6 +258,7 @@ function createVerifierServer(options = {}) {
         interactionLogger.log({
           type: "key.register",
           request: requestMeta(req, requestId, pathname),
+          requestSummary: summarizeKeyRegistrationRequest(body),
           responseSummary: summarizeKeyRegistration(user, authStore.activeKeyForUser(user.id)),
           statusCode: 201,
           durationMs: Date.now() - startedAt,
@@ -270,6 +272,7 @@ function createVerifierServer(options = {}) {
         interactionLogger.log({
           type: "key.register",
           request: requestMeta(req, requestId, pathname),
+          requestSummary: body ? summarizeKeyRegistrationRequest(body) : null,
           responseSummary: {
             valid: false,
             error: error.message || String(error),

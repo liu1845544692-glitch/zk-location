@@ -341,7 +341,7 @@ ANDROID_HOME=/home/lyy/Android/Sdk ANDROID_SDK_ROOT=/home/lyy/Android/Sdk ./grad
 最近一次已通过：
 
 ```text
-server npm test: 31 tests passed
+server npm test: 32 tests passed
 server npm run smoke: passed
 Android assembleDebug: BUILD SUCCESSFUL
 ```
@@ -430,7 +430,8 @@ Android assembleDebug: BUILD SUCCESSFUL
    - 已覆盖登录但未绑定 key 提交 proof，服务端拒绝。
    - 已覆盖请求里携带攻击者 public key 时，服务端仍使用当前用户 active key。
    - 已覆盖不可信 Android attestation root 注册被拒绝。
-   - 当前 `server npm test`：31 tests passed。
+   - 已覆盖 key.register 日志会保留客户端 bind key 时上传的 certificateChain。
+   - 当前 `server npm test`：32 tests passed。
 
 2. Key Attestation 真机复测。
    - 重新执行 `Generate new key and bind`，确认新解析出的 `Purpose SIGN`、`Digest SHA-256`、`Algorithm EC`、`Curve P-256` 都为 true。

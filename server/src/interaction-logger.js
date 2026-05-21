@@ -156,6 +156,35 @@ function summarizeKeyRegistration(user, key) {
   };
 }
 
+// ---- 提取 key 注册请求摘要 ----
+// 这里保留客户端在 bind key 时原始上传的 certificateChain（Base64 DER 字符串）。
+// 这些证书是公开证书材料，不包含私钥；用于实验复核和论文截图取证。
+function summarizeKeyRegistrationRequest(payload) {
+  // tee: 兼容顶层字段和 tee 子对象字段。
+  const tee = payload?.tee ?? {};
+  // publicKey: 客户端上传的 SPKI DER Base64 公钥。
+  const publicKey = pickString(
+    payload?.publicKey,
+    payload?.publicKeyBase64,
+    tee.publicKey,
+    tee.publicKeyBase64
+  );
+  // certificateChain: 客户端上传的 Android Keystore attestation 证书链。
+  const certificateChain =
+    payload?.certificateChain ??
+    payload?.certificateChainBase64 ??
+    tee.certificateChain ??
+    tee.certificateChainBase64;
+
+  return {
+    publicKey: shortValue(publicKey),
+    certificateChainCount: Array.isArray(certificateChain) ? certificateChain.length : 0,
+    clientCertificateChainBase64: Array.isArray(certificateChain)
+      ? certificateChain.map((certificate) => certificate.toString())
+      : [],
+  };
+}
+
 // ---- 提取 TEE（Keystore 签名）子字段摘要 ----
 // 从多种可能字段名中提取 payload/signature/publicKey/certificateChain
 function summarizeTee(payload) {
@@ -242,6 +271,7 @@ module.exports = {
   readRecentInteractions,
   requestMeta,
   summarizeKeyRegistration,
+  summarizeKeyRegistrationRequest,
   summarizeProofRequest,
   summarizeVerifyResponse,
 };

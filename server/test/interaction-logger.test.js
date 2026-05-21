@@ -16,6 +16,7 @@ const path = require("node:path");
 const os = require("node:os");
 const {
   createInteractionLogger,
+  summarizeKeyRegistrationRequest,
   summarizeProofRequest,
   summarizeVerifyResponse,
 } = require("../src/interaction-logger");
@@ -73,6 +74,22 @@ test("summarizes verify response", () => {
   assert.equal(summary.valid, true);
   assert.equal(summary.signature.signatureValid, true);
   assert.equal(summary.nonce.consumed, true);
+});
+
+test("summarizes key registration request with client certificate chain", () => {
+  // summary：key.register 请求摘要，应保留客户端上传的证书链原文。
+  const summary = summarizeKeyRegistrationRequest({
+    publicKey: "p".repeat(80),
+    certificateChain: ["leaf-cert-base64", "intermediate-cert-base64", "root-cert-base64"],
+  });
+
+  assert.equal(summary.certificateChainCount, 3);
+  assert.deepEqual(summary.clientCertificateChainBase64, [
+    "leaf-cert-base64",
+    "intermediate-cert-base64",
+    "root-cert-base64",
+  ]);
+  assert.match(summary.publicKey, /\.\.\./);
 });
 
 test("writes and reads recent interaction records", () => {
