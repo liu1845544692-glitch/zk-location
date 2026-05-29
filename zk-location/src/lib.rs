@@ -1,7 +1,7 @@
 /*
  * 文件功能：
  * - Rust/mopro 主库入口，负责把 H3 位置输入生成、Circom proof 生成和 proof 验证导出给 Android。
- * - 注册 areajudge_final.zkey 对应的 witness 函数，让 Android 端 generateCircomProof 可以找到电路。
+ * - 注册 areajudge_final.zkey 和 regex_ip_final.zkey 对应的 witness 函数，让 Android 端 generateCircomProof 可以找到电路。
  *
  * 执行流程：
  * 1. mopro_ffi::app! 初始化 UniFFI 绑定。
@@ -128,21 +128,27 @@ pub use circom::{
 #[cfg(target_os = "android")]
 mod witness {
     rust_witness::witness!(areajudge);
+    // w2c2/rust-witness 会把 wasm module 名中的下划线压缩掉：
+    // regex_ip.wasm 导出的 C 符号是 regexipInstantiate，而不是 regex_ipInstantiate。
+    rust_witness::witness!(regexip);
 }
 
 #[cfg(not(target_os = "android"))]
 mod witness {
     witnesscalc_adapter::witness!(areajudge);
+    witnesscalc_adapter::witness!(regex_ip);
 }
 
 #[cfg(target_os = "android")]
 crate::set_circom_circuits! {
     ("areajudge_final.zkey", circom_prover::witness::WitnessFn::RustWitness(witness::areajudge_witness)),
+    ("regex_ip_final.zkey", circom_prover::witness::WitnessFn::RustWitness(witness::regexip_witness)),
 }
 
 #[cfg(not(target_os = "android"))]
 crate::set_circom_circuits! {
     ("areajudge_final.zkey", circom_prover::witness::WitnessFn::WitnessCalc(witness::areajudge_witness)),
+    ("regex_ip_final.zkey", circom_prover::witness::WitnessFn::WitnessCalc(witness::regex_ip_witness)),
 }
 
 #[cfg(test)]
@@ -174,6 +180,7 @@ mod circom_tests {
         let proof = result.unwrap();
         assert!(verify_circom_proof(ZKEY_PATH.to_string(), proof, ProofLib::Arkworks).is_ok());
     }
+
 }
 
 // HALO2_TEMPLATE

@@ -960,7 +960,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_zk_location_checksum_func_generate_circom_proof() != 52868.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_zk_location_checksum_func_generate_halo2_proof() != 11387.toShort()) {
+    if (lib.uniffi_zk_location_checksum_func_generate_halo2_proof() != 15749.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_zk_location_checksum_func_generate_location_cell_boundary() != 4726.toShort()) {
@@ -969,10 +969,10 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_zk_location_checksum_func_generate_location_circuit_input() != 18731.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_zk_location_checksum_func_generate_noir_proof() != 46738.toShort()) {
+    if (lib.uniffi_zk_location_checksum_func_generate_noir_proof() != 34794.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_zk_location_checksum_func_get_noir_verification_key() != 48240.toShort()) {
+    if (lib.uniffi_zk_location_checksum_func_get_noir_verification_key() != 43834.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_zk_location_checksum_func_mopro_hello_world() != 30374.toShort()) {
@@ -981,10 +981,10 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_zk_location_checksum_func_verify_circom_proof() != 54309.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_zk_location_checksum_func_verify_halo2_proof() != 30423.toShort()) {
+    if (lib.uniffi_zk_location_checksum_func_verify_halo2_proof() != 12738.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_zk_location_checksum_func_verify_noir_proof() != 39617.toShort()) {
+    if (lib.uniffi_zk_location_checksum_func_verify_noir_proof() != 19514.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
 }
@@ -1189,10 +1189,25 @@ public object FfiConverterByteArray: FfiConverterRustBuffer<ByteArray> {
 
 
 data class CircomProof (
+    /**
+     * a：Groth16 proof 的 A 点。
+     */
     var `a`: G1, 
+    /**
+     * b：Groth16 proof 的 B 点。
+     */
     var `b`: G2, 
+    /**
+     * c：Groth16 proof 的 C 点。
+     */
     var `c`: G1, 
+    /**
+     * protocol：proof 协议名称，当前应为 groth16。
+     */
     var `protocol`: kotlin.String, 
+    /**
+     * curve：曲线名称，当前主链路使用 bn128/bn254。
+     */
     var `curve`: kotlin.String
 ) {
     
@@ -1233,7 +1248,13 @@ public object FfiConverterTypeCircomProof: FfiConverterRustBuffer<CircomProof> {
 
 
 data class CircomProofResult (
+    /**
+     * proof：Groth16 proof 的 a/b/c 曲线点和协议元数据。
+     */
     var `proof`: CircomProof, 
+    /**
+     * inputs：公开输入数组，第一个元素是 public_commitment。
+     */
     var `inputs`: List<kotlin.String>
 ) {
     
@@ -1265,8 +1286,17 @@ public object FfiConverterTypeCircomProofResult: FfiConverterRustBuffer<CircomPr
 
 
 data class G1 (
+    /**
+     * x：G1 点的 x 坐标，十进制字符串格式。
+     */
     var `x`: kotlin.String, 
+    /**
+     * y：G1 点的 y 坐标，十进制字符串格式。
+     */
     var `y`: kotlin.String, 
+    /**
+     * z：G1 点的 z 坐标，十进制字符串格式。
+     */
     var `z`: kotlin.String
 ) {
     
@@ -1301,8 +1331,17 @@ public object FfiConverterTypeG1: FfiConverterRustBuffer<G1> {
 
 
 data class G2 (
+    /**
+     * x：G2 点的 x 坐标二元数组，十进制字符串格式。
+     */
     var `x`: List<kotlin.String>, 
+    /**
+     * y：G2 点的 y 坐标二元数组，十进制字符串格式。
+     */
     var `y`: List<kotlin.String>, 
+    /**
+     * z：G2 点的 z 坐标二元数组，十进制字符串格式。
+     */
     var `z`: List<kotlin.String>
 ) {
     
@@ -1337,7 +1376,13 @@ public object FfiConverterTypeG2: FfiConverterRustBuffer<G2> {
 
 
 data class Halo2ProofResult (
+    /**
+     * proof：占位 Halo2 proof bytes。
+     */
     var `proof`: kotlin.ByteArray, 
+    /**
+     * inputs：占位 Halo2 public inputs bytes。
+     */
     var `inputs`: kotlin.ByteArray
 ) {
     
@@ -1372,6 +1417,9 @@ public object FfiConverterTypeHalo2ProofResult: FfiConverterRustBuffer<Halo2Proo
 
 sealed class MoproException: kotlin.Exception() {
     
+    /**
+     * CircomError：Circom witness/proof/verify 或 H3 输入生成相关错误。
+     */
     class CircomException(
         
         val v1: kotlin.String
@@ -1380,6 +1428,9 @@ sealed class MoproException: kotlin.Exception() {
             get() = "v1=${ v1 }"
     }
     
+    /**
+     * Halo2Error：保留给 Mopro 模板兼容，当前主链路未启用 Halo2。
+     */
     class Halo2Exception(
         
         val v1: kotlin.String
@@ -1388,6 +1439,9 @@ sealed class MoproException: kotlin.Exception() {
             get() = "v1=${ v1 }"
     }
     
+    /**
+     * NoirError：保留给 Mopro 模板兼容，当前主链路未启用 Noir。
+     */
     class NoirException(
         
         val v1: kotlin.String
@@ -1472,7 +1526,13 @@ public object FfiConverterTypeMoproError : FfiConverterRustBuffer<MoproException
 
 enum class ProofLib {
     
+    /**
+     * Arkworks：当前 Android 主链路使用的 proof backend。
+     */
     ARKWORKS,
+    /**
+     * Rapidsnark：兼容保留的 proof backend。
+     */
     RAPIDSNARK;
     companion object
 }
@@ -1605,6 +1665,9 @@ public object FfiConverterMapStringSequenceString: FfiConverterRustBuffer<Map<ko
     }
     
 
+        /**
+         * 未启用 Halo2 时的占位生成函数，调用即报错。
+         */
     @Throws(MoproException::class) fun `generateHalo2Proof`(`srsPath`: kotlin.String, `pkPath`: kotlin.String, `circuitInputs`: Map<kotlin.String, List<kotlin.String>>): Halo2ProofResult {
             return FfiConverterTypeHalo2ProofResult.lift(
     uniffiRustCallWithError(MoproException) { _status ->
@@ -1635,6 +1698,9 @@ public object FfiConverterMapStringSequenceString: FfiConverterRustBuffer<Map<ko
     }
     
 
+        /**
+         * 未启用 Noir 时的占位生成函数，调用即报错。
+         */
     @Throws(MoproException::class) fun `generateNoirProof`(`circuitPath`: kotlin.String, `srsPath`: kotlin.String?, `inputs`: List<kotlin.String>, `onChain`: kotlin.Boolean, `vk`: kotlin.ByteArray, `lowMemoryMode`: kotlin.Boolean): kotlin.ByteArray {
             return FfiConverterByteArray.lift(
     uniffiRustCallWithError(MoproException) { _status ->
@@ -1645,6 +1711,9 @@ public object FfiConverterMapStringSequenceString: FfiConverterRustBuffer<Map<ko
     }
     
 
+        /**
+         * 未启用 Noir 时的占位 verification key 生成函数，调用即报错。
+         */
     @Throws(MoproException::class) fun `getNoirVerificationKey`(`circuitPath`: kotlin.String, `srsPath`: kotlin.String?, `onChain`: kotlin.Boolean, `lowMemoryMode`: kotlin.Boolean): kotlin.ByteArray {
             return FfiConverterByteArray.lift(
     uniffiRustCallWithError(MoproException) { _status ->
@@ -1678,6 +1747,9 @@ public object FfiConverterMapStringSequenceString: FfiConverterRustBuffer<Map<ko
     }
     
 
+        /**
+         * 未启用 Halo2 时的占位验证函数，调用即报错。
+         */
     @Throws(MoproException::class) fun `verifyHalo2Proof`(`srsPath`: kotlin.String, `vkPath`: kotlin.String, `proof`: kotlin.ByteArray, `publicInput`: kotlin.ByteArray): kotlin.Boolean {
             return FfiConverterBoolean.lift(
     uniffiRustCallWithError(MoproException) { _status ->
@@ -1688,6 +1760,9 @@ public object FfiConverterMapStringSequenceString: FfiConverterRustBuffer<Map<ko
     }
     
 
+        /**
+         * 未启用 Noir 时的占位验证函数，调用即报错。
+         */
     @Throws(MoproException::class) fun `verifyNoirProof`(`circuitPath`: kotlin.String, `proof`: kotlin.ByteArray, `onChain`: kotlin.Boolean, `vk`: kotlin.ByteArray, `lowMemoryMode`: kotlin.Boolean): kotlin.Boolean {
             return FfiConverterBoolean.lift(
     uniffiRustCallWithError(MoproException) { _status ->

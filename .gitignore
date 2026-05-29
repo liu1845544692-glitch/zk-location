@@ -1,0 +1,24 @@
+# Local crash/debug captures. These are test artifacts, not project source.
+zk-location-crash-log.txt
+*-crash-log.txt
+*.log
+
+# Server source code is intentionally tracked:
+#   server/src/
+#   server/test/
+#   server/scripts/
+#   server/package.json
+#   server/package-lock.json
+#
+# Only local runtime state, logs, generated reports, and installed
+# dependencies are ignored.
+server/node_modules/
+server/data/
+server/logs/
+server/reports/
+
+# Local server secrets/trust overrides. Do not upload machine-specific
+# trust roots such as manually added Huawei/OEM attestation roots.
+server/.env
+server/.env.*
+server/trust/local_android_attestation_roots.pem

@@ -1,6 +1,6 @@
 /*
  * 文件功能：
- * - Rust build script，按目标平台准备 areajudge witness 计算代码。
+ * - Rust build script，按目标平台准备 areajudge 和 regex_ip witness 计算代码。
  *
  * 执行流程：
  * 1. cargo build 时自动执行 main。
@@ -12,7 +12,27 @@ fn main() {
 
     // CARGO_CFG_TARGET_OS：Cargo 注入的目标平台变量。
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("android") {
-        rust_witness::transpile::transpile_wasm("../circuits/areajudge_js".to_string());
+        println!("cargo:rerun-if-changed=../circuits/areajudge_js/areajudge.wasm");
+        println!("cargo:rerun-if-changed=../circuits/regex_ip_js/regex_ip.wasm");
+
+        // rust_witness 每次 transpile_wasm 都会生成同名 libcircuit.a。
+        // 因此 Android 目标必须一次性扫描包含全部 wasm 的目录；同时不能扫描整个 circuits，
+        // 因为旧的 regex-ip.wasm 和新的 regex_ip.wasm 会生成重复的 regexip handler。
+        let out_dir = std::path::PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR not set"));
+        let witness_wasm_dir = out_dir.join("android-witness-wasm");
+        std::fs::create_dir_all(&witness_wasm_dir).expect("failed to create Android witness wasm dir");
+        std::fs::copy(
+            "../circuits/areajudge_js/areajudge.wasm",
+            witness_wasm_dir.join("areajudge.wasm"),
+        )
+        .expect("failed to copy areajudge.wasm");
+        std::fs::copy(
+            "../circuits/regex_ip_js/regex_ip.wasm",
+            witness_wasm_dir.join("regex_ip.wasm"),
+        )
+        .expect("failed to copy regex_ip.wasm");
+
+        rust_witness::transpile::transpile_wasm(witness_wasm_dir.to_string_lossy().to_string());
     } else {
         // Use witnesscalc-adapter (C++ witness calculator) instead of rust-witness
         // for non-Android builds. The Android path uses rust-witness to avoid

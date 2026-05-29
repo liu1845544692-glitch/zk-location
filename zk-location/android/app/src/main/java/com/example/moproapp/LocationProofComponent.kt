@@ -1,15 +1,16 @@
 /*
  * 文件功能：
- * - Android 主业务界面，串联注册/登录、key 绑定、GNSS、H3/Circom proof、Keystore 签名和服务端验证。
+ * - Android 主业务界面，串联注册/登录、key 绑定、GNSS、H3/Circom proof、Keystore 签名、IPv4 正则 proof 和服务端验证。
  * - UI 只展示本次登录后产生的 active key 和 proof 状态，不复用历史 attestation 展示。
  *
  * 执行流程：
  * 1. 未登录时显示 AuthEntry，调用 /auth/register 或 /auth/login。
- * 2. 登录后显示地图、状态条、Actions 和 Results。
+ * 2. 登录后显示地图、状态条、Location、Regex 和 Results。
  * 3. Generate new key and bind 重新生成 Keystore key，并提交 certificateChain 给服务端验证。
  * 4. GNSS 获取经纬度，Rust/mopro 生成 H3 半平面输入和 ZK proof。
  * 5. Keystore 对 public_commitment + server_nonce 签名。
  * 6. Send proof to server 提交 proof、public inputs 和签名，由服务端统一验证。
+ * 7. Regex 面板将输入 IP 规范化为 ddd.ddd.ddd.ddd，并用 regex_ip 电路分步本地生成和验证 proof。
  */
 package com.example.moproapp
 
@@ -91,8 +92,11 @@ fun LocationProofComponent(modifier: Modifier = Modifier) {
     var verifyingTime by remember { mutableStateOf<String?>(null) }
     var valid by remember { mutableStateOf<String?>(null) }
     var publicInputs by remember { mutableStateOf<String?>(null) }
+    // ipv4Input/ipv4VerificationSummary：IPv4 正则 proof 本地验证输入和结果摘要。
+    var ipv4Input by remember { mutableStateOf("192.168.1.12") }
+    var ipv4VerificationSummary by remember { mutableStateOf<String?>(null) }
     // serverUrl：服务端 /verify-proof URL，其他接口会从它推导同 host 下路径。
-    var serverUrl by remember { mutableStateOf("http://10.0.2.2:3000/verify-proof") }
+    var serverUrl by remember { mutableStateOf("http://192.168.2.217:3000/verify-proof") }
     // serverResponse/reportSummary/performanceSummary：服务端验证、报告和性能统计显示内容。
     var serverResponse by remember { mutableStateOf<String?>(null) }
     var reportSummary by remember { mutableStateOf<String?>(null) }
@@ -103,15 +107,16 @@ fun LocationProofComponent(modifier: Modifier = Modifier) {
     var signatureResult by remember { mutableStateOf<LocationCommitmentSignature?>(null) }
     // authUsername/authPassword/authToken/authSummary：账号输入和当前登录 session 状态。
     var authUsername by remember { mutableStateOf("alice") }
-    var authPassword by remember { mutableStateOf("correct-password") }
+    var authPassword by remember { mutableStateOf("123456789") }
     var authToken by remember { mutableStateOf<String?>(null) }
     var authSummary by remember { mutableStateOf<String?>(null) }
     // keyBindingSummary：服务端返回的 active key attestation 摘要，仅来自本次登录后的绑定/查询。
     var keyBindingSummary by remember { mutableStateOf<String?>(null) }
     // error：最近一次失败原因，供 Results/Error 展示。
     var error by remember { mutableStateOf<String?>(null) }
-    // isActionSetOpen/isViewSetOpen/selectedOutput/operationStatus：弹窗和结果页 UI 状态。
+    // isActionSetOpen/isRegexSetOpen/isViewSetOpen/selectedOutput/operationStatus：弹窗和结果页 UI 状态。
     var isActionSetOpen by remember { mutableStateOf(false) }
+    var isRegexSetOpen by remember { mutableStateOf(false) }
     var isViewSetOpen by remember { mutableStateOf(false) }
     var selectedOutput by remember { mutableStateOf<OutputSection?>(null) }
     var operationStatus by remember { mutableStateOf<OperationStatus?>(null) }
@@ -124,6 +129,10 @@ fun LocationProofComponent(modifier: Modifier = Modifier) {
     var isSendingProof by remember { mutableStateOf(false) }
     var isLocating by remember { mutableStateOf(false) }
     var isReporting by remember { mutableStateOf(false) }
+    var isVerifyingIpv4 by remember { mutableStateOf(false) }
+    // regexProofResult/regexNormalizedInput：IPv4 正则 proof 的本地生成结果和规范化输入。
+    var regexProofResult by remember { mutableStateOf(emptyProofResult()) }
+    var regexNormalizedInput by remember { mutableStateOf<String?>(null) }
     // proofGenerationMs：最近一次客户端 proof 生成耗时，会随 proof 提交给服务端日志。
     var proofGenerationMs by remember { mutableStateOf<Long?>(null) }
     // clientProofTimes/serverVerifyTimes：本次 App 会话内的本地性能样本。
@@ -136,9 +145,11 @@ fun LocationProofComponent(modifier: Modifier = Modifier) {
 
     // zkeyPath：从 assets 复制出的 areajudge proving key 文件路径。
     val zkeyPath = getFilePathFromAssets("areajudge_final.zkey")
+    // regexIpZkeyPath：从 assets 复制出的 IPv4 正则 proving key 文件路径。
+    val regexIpZkeyPath = getFilePathFromAssets("regex_ip_final.zkey")
     // isBusy：任意异步操作进行中时禁用主操作，避免状态交叉。
     val isBusy = isGenerating || isVerifying || isAuthenticating ||
-        isBindingKey || isSigning || isSendingProof || isLocating || isReporting
+        isBindingKey || isSigning || isSendingProof || isLocating || isReporting || isVerifyingIpv4
     // clearProofState：位置、resolution 或 key 改变后清除旧 proof/signature/server response。
     val clearProofState = {
         provingTime = null
@@ -305,7 +316,19 @@ fun LocationProofComponent(modifier: Modifier = Modifier) {
                     shape = RoundedCornerShape(8.dp),
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
                 ) {
-                    Text(if (isBusy) "Processing" else "Actions", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    Text(if (isBusy) "Processing" else "Location", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                }
+
+                OutlinedButton(
+                    onClick = { isRegexSetOpen = true },
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 44.dp),
+                    enabled = !isBusy,
+                    shape = RoundedCornerShape(8.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                ) {
+                    Text("Regex", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                 }
 
                 OutlinedButton(
@@ -493,7 +516,7 @@ fun LocationProofComponent(modifier: Modifier = Modifier) {
                     publicInputs = null
                     signatureResult = null
                     error = null
-                    Thread {
+                    startProofWorker("location-proof-generate") {
                         try {
                             val input = generateLocationCircuitInput(
                                 currentLat,
@@ -520,14 +543,14 @@ fun LocationProofComponent(modifier: Modifier = Modifier) {
                         } finally {
                             isGenerating = false
                         }
-                    }.start()
+                    }
                 }
             },
             onVerifyProof = {
                 isVerifying = true
                 verifyingTime = null
                 error = null
-                Thread {
+                startProofWorker("location-proof-verify") {
                     try {
                         val startTime = System.currentTimeMillis()
                         val verified = verifyCircomProof(zkeyPath, result, ProofLib.ARKWORKS)
@@ -545,7 +568,7 @@ fun LocationProofComponent(modifier: Modifier = Modifier) {
                     } finally {
                         isVerifying = false
                     }
-                }.start()
+                }
             },
             onSignCommitment = {
                 if (authToken == null || keyBindingSummary == null) {
@@ -638,6 +661,136 @@ fun LocationProofComponent(modifier: Modifier = Modifier) {
         )
     }
 
+    if (authToken != null && isRegexSetOpen) {
+        RegexSetDialog(
+            ipv4Input = ipv4Input,
+            isBusy = isBusy,
+            hasRegexProof = regexProofResult.proof.a.x.isNotEmpty(),
+            onDismiss = { isRegexSetOpen = false },
+            onIpv4InputChange = {
+                ipv4Input = it
+                regexProofResult = emptyProofResult()
+                regexNormalizedInput = null
+                ipv4VerificationSummary = null
+            },
+            onGenerateIpv4Proof = {
+                isVerifyingIpv4 = true
+                error = null
+                startProofWorker("regex-proof-generate") {
+                    try {
+                        val (circuitInput, normalizedIp) = buildIpv4RegexCircuitInput(ipv4Input)
+                        val startTime = System.currentTimeMillis()
+                        regexProofResult = generateCircomProof(regexIpZkeyPath, circuitInput, ProofLib.ARKWORKS)
+                        val generatedMs = System.currentTimeMillis() - startTime
+                        regexNormalizedInput = normalizedIp
+                        ipv4VerificationSummary = formatIpv4VerificationSummary(
+                            rawInput = ipv4Input,
+                            normalizedInput = normalizedIp,
+                            proofGenerated = true,
+                            proofVerified = null,
+                            accepted = null,
+                            proofInputs = regexProofResult.inputs,
+                            provingMs = generatedMs,
+                            verifyingMs = null,
+                            errorMessage = null
+                        )
+                        operationStatus = OperationStatus(
+                            "IPv4 proof generation",
+                            true,
+                            ipv4VerificationSummary ?: "No IPv4 verification output"
+                        )
+                    } catch (e: Exception) {
+                        val message = e.message ?: e.toString()
+                        regexProofResult = emptyProofResult()
+                        regexNormalizedInput = null
+                        ipv4VerificationSummary = formatIpv4VerificationSummary(
+                            rawInput = ipv4Input,
+                            normalizedInput = null,
+                            proofGenerated = false,
+                            proofVerified = null,
+                            accepted = false,
+                            proofInputs = emptyList(),
+                            provingMs = null,
+                            verifyingMs = null,
+                            errorMessage = message
+                        )
+                        operationStatus = OperationStatus(
+                            "IPv4 proof generation",
+                            false,
+                            ipv4VerificationSummary ?: message
+                        )
+                    } finally {
+                        isVerifyingIpv4 = false
+                    }
+                }
+            },
+            onVerifyIpv4Proof = {
+                if (regexProofResult.proof.a.x.isEmpty()) {
+                    val message = "Generate IPv4 proof before local verification"
+                    ipv4VerificationSummary = formatIpv4VerificationSummary(
+                        rawInput = ipv4Input,
+                        normalizedInput = regexNormalizedInput,
+                        proofGenerated = false,
+                        proofVerified = false,
+                        accepted = false,
+                        proofInputs = emptyList(),
+                        provingMs = null,
+                        verifyingMs = null,
+                        errorMessage = message
+                    )
+                    operationStatus = OperationStatus("IPv4 proof verification", false, ipv4VerificationSummary ?: message)
+                } else {
+                    isVerifyingIpv4 = true
+                    error = null
+                    startProofWorker("regex-proof-verify") {
+                        try {
+                            val verifyStart = System.currentTimeMillis()
+                            val verified = verifyCircomProof(regexIpZkeyPath, regexProofResult, ProofLib.ARKWORKS)
+                            val verifiedMs = System.currentTimeMillis() - verifyStart
+                            val accepted = verified && regexProofResult.inputs.firstOrNull() == "1"
+                            ipv4VerificationSummary = formatIpv4VerificationSummary(
+                                rawInput = ipv4Input,
+                                normalizedInput = regexNormalizedInput,
+                                proofGenerated = true,
+                                proofVerified = verified,
+                                accepted = accepted,
+                                proofInputs = regexProofResult.inputs,
+                                provingMs = null,
+                                verifyingMs = verifiedMs,
+                                errorMessage = null
+                            )
+                            operationStatus = OperationStatus(
+                                "IPv4 proof verification",
+                                accepted,
+                                ipv4VerificationSummary ?: "No IPv4 verification output"
+                            )
+                        } catch (e: Exception) {
+                            val message = e.message ?: e.toString()
+                            ipv4VerificationSummary = formatIpv4VerificationSummary(
+                                rawInput = ipv4Input,
+                                normalizedInput = regexNormalizedInput,
+                                proofGenerated = true,
+                                proofVerified = false,
+                                accepted = false,
+                                proofInputs = regexProofResult.inputs,
+                                provingMs = null,
+                                verifyingMs = null,
+                                errorMessage = message
+                            )
+                            operationStatus = OperationStatus(
+                                "IPv4 proof verification",
+                                false,
+                                ipv4VerificationSummary ?: message
+                            )
+                        } finally {
+                            isVerifyingIpv4 = false
+                        }
+                    }
+                }
+            }
+        )
+    }
+
     if (isViewSetOpen) {
         ViewSetDialog(
             selectedOutput = selectedOutput,
@@ -650,6 +803,7 @@ fun LocationProofComponent(modifier: Modifier = Modifier) {
             serverResponse = serverResponse,
             reportSummary = reportSummary,
             performanceSummary = performanceSummary,
+            ipv4VerificationSummary = ipv4VerificationSummary,
             verifyingTime = verifyingTime,
             valid = valid,
             signatureResult = signatureResult,
@@ -672,6 +826,7 @@ fun LocationProofComponent(modifier: Modifier = Modifier) {
             serverResponse = serverResponse,
             reportSummary = reportSummary,
             performanceSummary = performanceSummary,
+            ipv4VerificationSummary = ipv4VerificationSummary,
             verifyingTime = verifyingTime,
             valid = valid,
             signatureResult = signatureResult,
@@ -957,7 +1112,7 @@ private fun AuthEntry(
 }
 
 @Composable
-/** Actions 弹窗，集中放置账号、key、GNSS、proof、签名和实验导出操作。 */
+/** Location 弹窗，集中放置账号、key、GNSS、location proof、签名和实验导出操作。 */
 private fun ActionSetDialog(
     // serverUrl：当前服务端地址。
     serverUrl: String,
@@ -995,7 +1150,7 @@ private fun ActionSetDialog(
         shape = RoundedCornerShape(8.dp),
         title = {
             Text(
-                "Actions",
+                "Location",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold
             )
@@ -1077,6 +1232,64 @@ private fun ActionSetDialog(
 }
 
 @Composable
+/** Regex 弹窗，专门放置 IPv4 正则 proof 的本地生成和本地验证。 */
+private fun RegexSetDialog(
+    // ipv4Input：IPv4 正则 proof 的原始用户输入。
+    ipv4Input: String,
+    // isBusy：是否禁用所有动作按钮。
+    isBusy: Boolean,
+    // hasRegexProof：当前输入是否已经生成过 regex proof。
+    hasRegexProof: Boolean,
+    // onDismiss：关闭弹窗。
+    onDismiss: () -> Unit,
+    // onIpv4InputChange：更新 IPv4 验证输入。
+    onIpv4InputChange: (String) -> Unit,
+    // onGenerateIpv4Proof/onVerifyIpv4Proof：生成 proof 与验证 proof 的两步操作。
+    onGenerateIpv4Proof: () -> Unit,
+    onVerifyIpv4Proof: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(8.dp),
+        title = {
+            Text(
+                "Regex",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                if (isBusy) {
+                    CircularProgressIndicator(modifier = Modifier.padding(4.dp))
+                }
+                OutlinedTextField(
+                    value = ipv4Input,
+                    onValueChange = onIpv4InputChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !isBusy,
+                    singleLine = true,
+                    shape = RoundedCornerShape(8.dp),
+                    label = { Text("IPv4 address", fontSize = 12.sp) },
+                    textStyle = MaterialTheme.typography.bodySmall
+                )
+                CompactActionButton("Generate IPv4 proof", enabled = !isBusy, onClick = onGenerateIpv4Proof)
+                CompactActionButton("Verify IPv4 proof", enabled = !isBusy && hasRegexProof, outlined = true, onClick = onVerifyIpv4Proof)
+            }
+        },
+        confirmButton = {
+            CompactActionButton("Close", enabled = !isBusy, outlined = true, onClick = onDismiss)
+        }
+    )
+}
+
+@Composable
 /** Results 弹窗，显示可查看的结果分类。 */
 private fun ViewSetDialog(
     // selectedOutput：当前打开的结果分类。
@@ -1092,6 +1305,7 @@ private fun ViewSetDialog(
     serverResponse: String?,
     reportSummary: String?,
     performanceSummary: String?,
+    ipv4VerificationSummary: String?,
     verifyingTime: String?,
     valid: String?,
     signatureResult: LocationCommitmentSignature?,
@@ -1150,6 +1364,12 @@ private fun ViewSetDialog(
                     enabled = performanceSummary != null,
                     selected = selectedOutput == OutputSection.PERFORMANCE,
                     onClick = { onSelectOutput(OutputSection.PERFORMANCE) }
+                )
+                OutputSectionButton(
+                    label = "IPv4",
+                    enabled = ipv4VerificationSummary != null,
+                    selected = selectedOutput == OutputSection.IPV4,
+                    onClick = { onSelectOutput(OutputSection.IPV4) }
                 )
                 OutputSectionButton(
                     label = "Report",
@@ -1284,6 +1504,7 @@ private fun OutputSectionDialog(
     serverResponse: String?,
     reportSummary: String?,
     performanceSummary: String?,
+    ipv4VerificationSummary: String?,
     verifyingTime: String?,
     valid: String?,
     signatureResult: LocationCommitmentSignature?,
@@ -1339,6 +1560,10 @@ private fun OutputSectionDialog(
 
                     OutputSection.PERFORMANCE -> {
                         Text(performanceSummary ?: "No performance stats", style = MaterialTheme.typography.bodyMedium)
+                    }
+
+                    OutputSection.IPV4 -> {
+                        Text(ipv4VerificationSummary ?: "No IPv4 verification output", style = MaterialTheme.typography.bodyMedium)
                     }
 
                     OutputSection.REPORT -> {
@@ -1414,6 +1639,76 @@ private fun formatProofSummary(proofResult: CircomProofResult): String {
     ).joinToString("\n")
 }
 
+/** 用较大的线程栈运行 mopro native prover，避免 witness/prover 在默认 Java Thread 栈上崩溃。 */
+private fun startProofWorker(name: String, block: () -> Unit) {
+    // stackSizeBytes：native witness/prover 有较深调用栈，64 MiB 给 Android 真机留足余量。
+    val stackSizeBytes = 64L * 1024L * 1024L
+    Thread(null, Runnable { block() }, name, stackSizeBytes).start()
+}
+
+/** 将用户 IPv4 输入转换为 regex_ip 电路输入 JSON。 */
+private fun buildIpv4RegexCircuitInput(rawInput: String): Pair<String, String> {
+    // trimmedInput：去掉首尾空白后的用户输入。
+    val trimmedInput = rawInput.trim()
+    // parts：按点号拆分出的四个 IPv4 段。
+    val parts = trimmedInput.split('.')
+    require(parts.size == 4) {
+        "IPv4 must contain exactly four segments separated by three dots"
+    }
+
+    // normalizedParts：每段左补零为 3 位，便于电路固定读取 ddd.ddd.ddd.ddd。
+    val normalizedParts = parts.mapIndexed { index, part ->
+        require(part.isNotEmpty()) {
+            "IPv4 segment ${index + 1} is empty"
+        }
+        require(part.length <= 3) {
+            "IPv4 segment ${index + 1} is longer than 3 characters"
+        }
+        require(part.all { it in '0'..'9' }) {
+            "IPv4 segment ${index + 1} must contain only digits"
+        }
+        require(part.toInt() <= 255) {
+            "IPv4 segment ${index + 1} must be in 0..255"
+        }
+        part.padStart(3, '0')
+    }
+    // normalizedIp：电路实际验证的 15 字节字符串。
+    val normalizedIp = normalizedParts.joinToString(".")
+    // asciiValues：normalizedIp 的 ASCII/Unicode code point，电路会约束它们必须是数字或点号。
+    val asciiValues = normalizedIp.map { char -> char.code.toString() }
+    // circuitInput：mopro generateCircomProof 接收的 JSON 输入。
+    val circuitInput = JSONObject()
+        .put("msg", JSONArray(asciiValues))
+        .toString()
+
+    return circuitInput to normalizedIp
+}
+
+/** 生成 IPv4 本地 ZK 正则验证摘要。 */
+private fun formatIpv4VerificationSummary(
+    rawInput: String,
+    normalizedInput: String?,
+    proofGenerated: Boolean,
+    proofVerified: Boolean?,
+    accepted: Boolean?,
+    proofInputs: List<String>,
+    provingMs: Long?,
+    verifyingMs: Long?,
+    errorMessage: String?
+): String {
+    return listOf(
+        explainedValue("Raw input", rawInput, "用户在手机端输入的 IPv4 字符串"),
+        explainedValue("Normalized input", normalizedInput.orEmpty(), "进入电路前按段左补零后的固定 15 字节字符串"),
+        explainedValue("Proof generated", proofGenerated.toString(), "true 表示已经本地生成 regex_ip proof"),
+        explainedValue("Proof verified", proofVerified?.toString().orEmpty(), "true 表示已经本地验证生成出来的 proof"),
+        explainedValue("ZK IPv4 valid", accepted?.toString().orEmpty(), "true 表示本地 proof 生成和 proof 验证都成功，且公开输出为 1"),
+        explainedValue("Public output", proofInputs.firstOrNull().orEmpty(), "regex_ip 电路的公开输出，成功时为 1"),
+        explainedValue("Proof generation", provingMs?.let { "$it ms" }.orEmpty(), "手机端本地生成 IPv4 proof 的耗时"),
+        explainedValue("Proof verification", verifyingMs?.let { "$it ms" }.orEmpty(), "手机端本地验证 IPv4 proof 的耗时"),
+        explainedValue("Failure reason", errorMessage.orEmpty(), "失败时这里显示预处理或电路约束失败原因")
+    ).joinToString("\n")
+}
+
 /** 从规范化 Keystore payload 中提取指定字段。 */
 private fun payloadField(payload: String, key: String): String {
     return payload
@@ -1435,6 +1730,7 @@ private enum class OutputSection(val title: String) {
     PROOF("Proof"),
     SERVER("Server"),
     PERFORMANCE("Stats"),
+    IPV4("IPv4"),
     REPORT("Report"),
     VERIFICATION("Verification"),
     SIGNATURE("Signature"),

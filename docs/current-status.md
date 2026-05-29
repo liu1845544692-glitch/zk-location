@@ -1,6 +1,6 @@
 # ZK-Location 项目状态文档
 
-更新时间：2026-05-16
+更新时间：2026-05-29
 
 本文档用于记录当前项目状态。后续每次修改关键功能、协议、接口、安全假设或实验流程时，应同步更新本文档，方便在新对话或上下文压缩后快速恢复项目背景。
 
@@ -117,6 +117,20 @@ C = Poseidon(x, y, salt)
 关键文件：
 
 - `circuits/areajudge.circom`
+- `circuits/regex-ip.circom`
+
+新增 IPv4 正则 proof 电路：
+
+- 客户端输入 IPv4 字符串。
+- Android 端把每段左补零为固定格式 `ddd.ddd.ddd.ddd`，例如 `192.168.1.12 -> 192.168.001.012`。
+- 电路私有输入为 15 个 ASCII 字节 `msg[15]`。
+- 电路约束：
+  - 数字位必须是 ASCII `'0'..'9'`。
+  - 固定位置 3、7、11 必须是点号 `'.'`。
+  - 四个三位段分别解析为十进制整数。
+  - 每段必须满足 `0 <= octet <= 255`。
+- 电路公开输出 `valid = 1`。如果格式或范围不满足约束，则无法生成有效 witness/proof。
+- 当前该功能只在 Android 本地生成并验证 proof，不接入服务端接口。
 
 ### 4.2 Rust 预处理层
 
@@ -155,6 +169,19 @@ C = Poseidon(x, y, salt)
 - `Send proof to server`。
 - 服务端交互结果精简显示。
 - 关键输出增加中文解释。
+- 新增 IPv4 正则 proof 本地验证：
+  - 登录页默认服务端地址为 `http://192.168.2.217:3000/verify-proof`，默认用户名为 `alice`，默认密码为 `123456789`。
+  - 主页面将 `Actions` 改为 `Location`，只放 GNSS/location proof/key/sign/server verify 主链路。
+  - 主页面新增并列的 `Regex` 按钮，专门放 IPv4 正则 proof 操作。
+  - `Generate IPv4 proof` 只本地生成 `regex_ip_final.zkey` proof。
+  - `Verify IPv4 proof` 只本地验证已经生成的 IPv4 proof。
+  - Location proof 和 Regex proof 的生成/验证都使用较大线程栈的后台 worker，避免 native witness/prover 在默认 Java Thread 栈上崩溃。
+  - Regex 输入在调用 native prover 前会先检查段数、数字字符和 `0..255` 范围，非法输入直接显示错误，不进入 native witness。
+  - Android native witness 构建已修复：
+    - `rust_witness::transpile_wasm` 只扫描临时目录中的 `areajudge.wasm` 和 `regex_ip.wasm`，避免旧 `regex-ip.wasm` 造成重复 handler。
+    - Android 端注册 `regexip_witness` 给 `regex_ip_final.zkey`，匹配 w2c2 生成的 `regexipInstantiate` 符号。
+    - 已通过 `readelf` 确认 `libzk_location.so` 中 `areajudgeInstantiate` 和 `regexipInstantiate` 均为本地定义符号。
+  - Results 中新增 `IPv4` 输出区，显示原始输入、规范化输入、公开输出、proof 生成/验证耗时和失败原因。
 
 关键文件：
 
@@ -162,6 +189,12 @@ C = Poseidon(x, y, salt)
 - `zk-location/android/app/src/main/java/com/example/moproapp/KeystoreLocationSigner.kt`
 - `zk-location/android/app/src/main/java/com/example/moproapp/GnssLocationReader.kt`
 - `zk-location/android/app/src/main/java/com/example/moproapp/CampusOfflineMap.kt`
+
+新增 IPv4 proof 相关产物：
+
+- `zk-location/android/app/src/main/assets/regex_ip_final.zkey`
+- `circuits/regex_ip_js/regex_ip.wasm`
+- `zk-location/test-vectors/circom/regex_ip_final.zkey`
 
 当前客户端发送 `/verify-proof` 的最小数据：
 
