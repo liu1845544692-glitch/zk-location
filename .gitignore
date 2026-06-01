@@ -22,3 +22,18 @@ server/reports/
 server/.env
 server/.env.*
 server/trust/local_android_attestation_roots.pem
+
+# Circom compiler intermediates. Keep circuit source, final zkey files, and the
+# specific wasm files consumed by zk-location/build.rs.
+circuits/*.r1cs
+circuits/*.sym
+circuits/*_0000.zkey
+circuits/*.wtns
+circuits/proof_*.json
+circuits/public_*.json
+circuits/*_cpp/
+circuits/regex-ip_js/
+circuits/areajudge_js/generate_witness.js
+circuits/areajudge_js/witness_calculator.js
+circuits/regex_timestamp_js/generate_witness.js
+circuits/regex_timestamp_js/witness_calculator.js

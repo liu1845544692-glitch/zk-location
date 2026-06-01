@@ -1,6 +1,6 @@
 /*
  * 文件功能：
- * - Android 主业务界面，串联注册/登录、key 绑定、GNSS、H3/Circom proof、Keystore 签名、IPv4 正则 proof 和服务端验证。
+ * - Android 主业务界面，串联注册/登录、key 绑定、GNSS、H3/Circom proof、Keystore 签名、IPv4/时间戳正则 proof 和服务端验证。
  * - UI 只展示本次登录后产生的 active key 和 proof 状态，不复用历史 attestation 展示。
  *
  * 执行流程：
@@ -10,7 +10,7 @@
  * 4. GNSS 获取经纬度，Rust/mopro 生成 H3 半平面输入和 ZK proof。
  * 5. Keystore 对 public_commitment + server_nonce 签名。
  * 6. Send proof to server 提交 proof、public inputs 和签名，由服务端统一验证。
- * 7. Regex 面板将输入 IP 规范化为 ddd.ddd.ddd.ddd，并用 regex_ip 电路分步本地生成和验证 proof。
+ * 7. Regex 面板分别使用 regex_ip 和 regex_timestamp 电路分步本地生成和验证 proof。
  */
 package com.example.moproapp
 
@@ -41,6 +41,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedButton
@@ -95,6 +96,9 @@ fun LocationProofComponent(modifier: Modifier = Modifier) {
     // ipv4Input/ipv4VerificationSummary：IPv4 正则 proof 本地验证输入和结果摘要。
     var ipv4Input by remember { mutableStateOf("192.168.1.12") }
     var ipv4VerificationSummary by remember { mutableStateOf<String?>(null) }
+    // timestampInput/timestampVerificationSummary：时间戳正则 proof 本地验证输入和结果摘要。
+    var timestampInput by remember { mutableStateOf("2024-02-29 23:59:59.999999") }
+    var timestampVerificationSummary by remember { mutableStateOf<String?>(null) }
     // serverUrl：服务端 /verify-proof URL，其他接口会从它推导同 host 下路径。
     var serverUrl by remember { mutableStateOf("http://192.168.2.217:3000/verify-proof") }
     // serverResponse/reportSummary/performanceSummary：服务端验证、报告和性能统计显示内容。
@@ -130,9 +134,13 @@ fun LocationProofComponent(modifier: Modifier = Modifier) {
     var isLocating by remember { mutableStateOf(false) }
     var isReporting by remember { mutableStateOf(false) }
     var isVerifyingIpv4 by remember { mutableStateOf(false) }
+    var isVerifyingTimestamp by remember { mutableStateOf(false) }
     // regexProofResult/regexNormalizedInput：IPv4 正则 proof 的本地生成结果和规范化输入。
     var regexProofResult by remember { mutableStateOf(emptyProofResult()) }
     var regexNormalizedInput by remember { mutableStateOf<String?>(null) }
+    // timestampProofResult/timestampNormalizedInput：时间戳正则 proof 的本地生成结果和规范化输入。
+    var timestampProofResult by remember { mutableStateOf(emptyProofResult()) }
+    var timestampNormalizedInput by remember { mutableStateOf<String?>(null) }
     // proofGenerationMs：最近一次客户端 proof 生成耗时，会随 proof 提交给服务端日志。
     var proofGenerationMs by remember { mutableStateOf<Long?>(null) }
     // clientProofTimes/serverVerifyTimes：本次 App 会话内的本地性能样本。
@@ -147,9 +155,12 @@ fun LocationProofComponent(modifier: Modifier = Modifier) {
     val zkeyPath = getFilePathFromAssets("areajudge_final.zkey")
     // regexIpZkeyPath：从 assets 复制出的 IPv4 正则 proving key 文件路径。
     val regexIpZkeyPath = getFilePathFromAssets("regex_ip_final.zkey")
+    // regexTimestampZkeyPath：从 assets 复制出的时间戳正则 proving key 文件路径。
+    val regexTimestampZkeyPath = getFilePathFromAssets("regex_timestamp_final.zkey")
     // isBusy：任意异步操作进行中时禁用主操作，避免状态交叉。
     val isBusy = isGenerating || isVerifying || isAuthenticating ||
-        isBindingKey || isSigning || isSendingProof || isLocating || isReporting || isVerifyingIpv4
+        isBindingKey || isSigning || isSendingProof || isLocating || isReporting ||
+        isVerifyingIpv4 || isVerifyingTimestamp
     // clearProofState：位置、resolution 或 key 改变后清除旧 proof/signature/server response。
     val clearProofState = {
         provingTime = null
@@ -664,8 +675,10 @@ fun LocationProofComponent(modifier: Modifier = Modifier) {
     if (authToken != null && isRegexSetOpen) {
         RegexSetDialog(
             ipv4Input = ipv4Input,
+            timestampInput = timestampInput,
             isBusy = isBusy,
             hasRegexProof = regexProofResult.proof.a.x.isNotEmpty(),
+            hasTimestampProof = timestampProofResult.proof.a.x.isNotEmpty(),
             onDismiss = { isRegexSetOpen = false },
             onIpv4InputChange = {
                 ipv4Input = it
@@ -787,6 +800,139 @@ fun LocationProofComponent(modifier: Modifier = Modifier) {
                         }
                     }
                 }
+            },
+            onTimestampInputChange = {
+                timestampInput = it
+                timestampProofResult = emptyProofResult()
+                timestampNormalizedInput = null
+                timestampVerificationSummary = null
+            },
+            onGenerateTimestampProof = {
+                isVerifyingTimestamp = true
+                error = null
+                startProofWorker("timestamp-regex-proof-generate") {
+                    try {
+                        val (circuitInput, normalizedTimestamp) = buildTimestampRegexCircuitInput(timestampInput)
+                        val startTime = System.currentTimeMillis()
+                        timestampProofResult = generateCircomProof(
+                            regexTimestampZkeyPath,
+                            circuitInput,
+                            ProofLib.ARKWORKS
+                        )
+                        val generatedMs = System.currentTimeMillis() - startTime
+                        timestampNormalizedInput = normalizedTimestamp
+                        timestampVerificationSummary = formatTimestampVerificationSummary(
+                            rawInput = timestampInput,
+                            normalizedInput = normalizedTimestamp,
+                            proofGenerated = true,
+                            proofVerified = null,
+                            accepted = null,
+                            proofInputs = timestampProofResult.inputs,
+                            provingMs = generatedMs,
+                            verifyingMs = null,
+                            errorMessage = null
+                        )
+                        operationStatus = OperationStatus(
+                            "Timestamp proof generation",
+                            true,
+                            timestampVerificationSummary ?: "No timestamp verification output"
+                        )
+                    } catch (e: Exception) {
+                        val message = e.message ?: e.toString()
+                        timestampProofResult = emptyProofResult()
+                        timestampNormalizedInput = null
+                        timestampVerificationSummary = formatTimestampVerificationSummary(
+                            rawInput = timestampInput,
+                            normalizedInput = null,
+                            proofGenerated = false,
+                            proofVerified = null,
+                            accepted = false,
+                            proofInputs = emptyList(),
+                            provingMs = null,
+                            verifyingMs = null,
+                            errorMessage = message
+                        )
+                        operationStatus = OperationStatus(
+                            "Timestamp proof generation",
+                            false,
+                            timestampVerificationSummary ?: message
+                        )
+                    } finally {
+                        isVerifyingTimestamp = false
+                    }
+                }
+            },
+            onVerifyTimestampProof = {
+                if (timestampProofResult.proof.a.x.isEmpty()) {
+                    val message = "Generate timestamp proof before local verification"
+                    timestampVerificationSummary = formatTimestampVerificationSummary(
+                        rawInput = timestampInput,
+                        normalizedInput = timestampNormalizedInput,
+                        proofGenerated = false,
+                        proofVerified = false,
+                        accepted = false,
+                        proofInputs = emptyList(),
+                        provingMs = null,
+                        verifyingMs = null,
+                        errorMessage = message
+                    )
+                    operationStatus = OperationStatus(
+                        "Timestamp proof verification",
+                        false,
+                        timestampVerificationSummary ?: message
+                    )
+                } else {
+                    isVerifyingTimestamp = true
+                    error = null
+                    startProofWorker("timestamp-regex-proof-verify") {
+                        try {
+                            val verifyStart = System.currentTimeMillis()
+                            val verified = verifyCircomProof(
+                                regexTimestampZkeyPath,
+                                timestampProofResult,
+                                ProofLib.ARKWORKS
+                            )
+                            val verifiedMs = System.currentTimeMillis() - verifyStart
+                            val accepted = verified && timestampProofResult.inputs.firstOrNull() == "1"
+                            timestampVerificationSummary = formatTimestampVerificationSummary(
+                                rawInput = timestampInput,
+                                normalizedInput = timestampNormalizedInput,
+                                proofGenerated = true,
+                                proofVerified = verified,
+                                accepted = accepted,
+                                proofInputs = timestampProofResult.inputs,
+                                provingMs = null,
+                                verifyingMs = verifiedMs,
+                                errorMessage = null
+                            )
+                            operationStatus = OperationStatus(
+                                "Timestamp proof verification",
+                                accepted,
+                                timestampVerificationSummary ?: "No timestamp verification output"
+                            )
+                        } catch (e: Exception) {
+                            val message = e.message ?: e.toString()
+                            timestampVerificationSummary = formatTimestampVerificationSummary(
+                                rawInput = timestampInput,
+                                normalizedInput = timestampNormalizedInput,
+                                proofGenerated = true,
+                                proofVerified = false,
+                                accepted = false,
+                                proofInputs = timestampProofResult.inputs,
+                                provingMs = null,
+                                verifyingMs = null,
+                                errorMessage = message
+                            )
+                            operationStatus = OperationStatus(
+                                "Timestamp proof verification",
+                                false,
+                                timestampVerificationSummary ?: message
+                            )
+                        } finally {
+                            isVerifyingTimestamp = false
+                        }
+                    }
+                }
             }
         )
     }
@@ -804,6 +950,7 @@ fun LocationProofComponent(modifier: Modifier = Modifier) {
             reportSummary = reportSummary,
             performanceSummary = performanceSummary,
             ipv4VerificationSummary = ipv4VerificationSummary,
+            timestampVerificationSummary = timestampVerificationSummary,
             verifyingTime = verifyingTime,
             valid = valid,
             signatureResult = signatureResult,
@@ -827,6 +974,7 @@ fun LocationProofComponent(modifier: Modifier = Modifier) {
             reportSummary = reportSummary,
             performanceSummary = performanceSummary,
             ipv4VerificationSummary = ipv4VerificationSummary,
+            timestampVerificationSummary = timestampVerificationSummary,
             verifyingTime = verifyingTime,
             valid = valid,
             signatureResult = signatureResult,
@@ -1232,21 +1380,29 @@ private fun ActionSetDialog(
 }
 
 @Composable
-/** Regex 弹窗，专门放置 IPv4 正则 proof 的本地生成和本地验证。 */
+/** Regex 弹窗，集中放置 IPv4 和时间戳正则 proof 的本地生成和本地验证。 */
 private fun RegexSetDialog(
     // ipv4Input：IPv4 正则 proof 的原始用户输入。
     ipv4Input: String,
+    // timestampInput：时间戳正则 proof 的原始用户输入。
+    timestampInput: String,
     // isBusy：是否禁用所有动作按钮。
     isBusy: Boolean,
-    // hasRegexProof：当前输入是否已经生成过 regex proof。
+    // hasRegexProof/hasTimestampProof：对应输入是否已经生成过 regex proof。
     hasRegexProof: Boolean,
+    hasTimestampProof: Boolean,
     // onDismiss：关闭弹窗。
     onDismiss: () -> Unit,
     // onIpv4InputChange：更新 IPv4 验证输入。
     onIpv4InputChange: (String) -> Unit,
     // onGenerateIpv4Proof/onVerifyIpv4Proof：生成 proof 与验证 proof 的两步操作。
     onGenerateIpv4Proof: () -> Unit,
-    onVerifyIpv4Proof: () -> Unit
+    onVerifyIpv4Proof: () -> Unit,
+    // onTimestampInputChange：更新时间戳验证输入。
+    onTimestampInputChange: (String) -> Unit,
+    // onGenerateTimestampProof/onVerifyTimestampProof：时间戳 proof 的生成和验证操作。
+    onGenerateTimestampProof: () -> Unit,
+    onVerifyTimestampProof: () -> Unit
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1281,6 +1437,24 @@ private fun RegexSetDialog(
                 )
                 CompactActionButton("Generate IPv4 proof", enabled = !isBusy, onClick = onGenerateIpv4Proof)
                 CompactActionButton("Verify IPv4 proof", enabled = !isBusy && hasRegexProof, outlined = true, onClick = onVerifyIpv4Proof)
+                HorizontalDivider()
+                OutlinedTextField(
+                    value = timestampInput,
+                    onValueChange = onTimestampInputChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !isBusy,
+                    singleLine = true,
+                    shape = RoundedCornerShape(8.dp),
+                    label = { Text("Timestamp", fontSize = 12.sp) },
+                    textStyle = MaterialTheme.typography.bodySmall
+                )
+                CompactActionButton("Generate timestamp proof", enabled = !isBusy, onClick = onGenerateTimestampProof)
+                CompactActionButton(
+                    "Verify timestamp proof",
+                    enabled = !isBusy && hasTimestampProof,
+                    outlined = true,
+                    onClick = onVerifyTimestampProof
+                )
             }
         },
         confirmButton = {
@@ -1306,6 +1480,7 @@ private fun ViewSetDialog(
     reportSummary: String?,
     performanceSummary: String?,
     ipv4VerificationSummary: String?,
+    timestampVerificationSummary: String?,
     verifyingTime: String?,
     valid: String?,
     signatureResult: LocationCommitmentSignature?,
@@ -1370,6 +1545,12 @@ private fun ViewSetDialog(
                     enabled = ipv4VerificationSummary != null,
                     selected = selectedOutput == OutputSection.IPV4,
                     onClick = { onSelectOutput(OutputSection.IPV4) }
+                )
+                OutputSectionButton(
+                    label = "Timestamp",
+                    enabled = timestampVerificationSummary != null,
+                    selected = selectedOutput == OutputSection.TIMESTAMP,
+                    onClick = { onSelectOutput(OutputSection.TIMESTAMP) }
                 )
                 OutputSectionButton(
                     label = "Report",
@@ -1505,6 +1686,7 @@ private fun OutputSectionDialog(
     reportSummary: String?,
     performanceSummary: String?,
     ipv4VerificationSummary: String?,
+    timestampVerificationSummary: String?,
     verifyingTime: String?,
     valid: String?,
     signatureResult: LocationCommitmentSignature?,
@@ -1564,6 +1746,10 @@ private fun OutputSectionDialog(
 
                     OutputSection.IPV4 -> {
                         Text(ipv4VerificationSummary ?: "No IPv4 verification output", style = MaterialTheme.typography.bodyMedium)
+                    }
+
+                    OutputSection.TIMESTAMP -> {
+                        Text(timestampVerificationSummary ?: "No timestamp verification output", style = MaterialTheme.typography.bodyMedium)
                     }
 
                     OutputSection.REPORT -> {
@@ -1709,6 +1895,77 @@ private fun formatIpv4VerificationSummary(
     ).joinToString("\n")
 }
 
+/** 将用户时间戳输入转换为 regex_timestamp 电路输入 JSON，并在进入 native prover 前执行同等语义校验。 */
+private fun buildTimestampRegexCircuitInput(rawInput: String): Pair<String, String> {
+    // normalizedTimestamp：时间戳不做补零，用户必须直接输入固定 26 字节格式。
+    val normalizedTimestamp = rawInput.trim()
+    val timestampPattern = Regex("""^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{6}$""")
+    require(timestampPattern.matches(normalizedTimestamp)) {
+        "Timestamp must use YYYY-MM-DD HH:mm:ss.ffffff"
+    }
+
+    // year...microsecond：固定位置解析出的时间字段，与电路读取位置保持一致。
+    val year = normalizedTimestamp.substring(0, 4).toInt()
+    val month = normalizedTimestamp.substring(5, 7).toInt()
+    val day = normalizedTimestamp.substring(8, 10).toInt()
+    val hour = normalizedTimestamp.substring(11, 13).toInt()
+    val minute = normalizedTimestamp.substring(14, 16).toInt()
+    val second = normalizedTimestamp.substring(17, 19).toInt()
+    val microsecond = normalizedTimestamp.substring(20, 26).toInt()
+
+    require(month in 1..12) { "Timestamp month must be in 1..12" }
+    val maxDays = when (month) {
+        2 -> if (isGregorianLeapYear(year)) 29 else 28
+        4, 6, 9, 11 -> 30
+        else -> 31
+    }
+    require(day in 1..maxDays) {
+        "Timestamp day must be in 1..$maxDays for the selected year and month"
+    }
+    require(hour in 0..23) { "Timestamp hour must be in 0..23" }
+    require(minute in 0..59) { "Timestamp minute must be in 0..59" }
+    require(second in 0..59) { "Timestamp second must be in 0..59" }
+    require(microsecond in 0..999999) { "Timestamp microsecond must be in 0..999999" }
+
+    // asciiValues：固定时间戳的 ASCII code point，电路会再次验证格式、范围和闰年规则。
+    val asciiValues = normalizedTimestamp.map { char -> char.code.toString() }
+    val circuitInput = JSONObject()
+        .put("msg", JSONArray(asciiValues))
+        .toString()
+
+    return circuitInput to normalizedTimestamp
+}
+
+/** 按公历规则判断年份是否为闰年，与 regex_timestamp 电路中的 IsLeapYear 保持一致。 */
+private fun isGregorianLeapYear(year: Int): Boolean {
+    return year % 400 == 0 || (year % 4 == 0 && year % 100 != 0)
+}
+
+/** 生成时间戳本地 ZK 正则验证摘要。 */
+private fun formatTimestampVerificationSummary(
+    rawInput: String,
+    normalizedInput: String?,
+    proofGenerated: Boolean,
+    proofVerified: Boolean?,
+    accepted: Boolean?,
+    proofInputs: List<String>,
+    provingMs: Long?,
+    verifyingMs: Long?,
+    errorMessage: String?
+): String {
+    return listOf(
+        explainedValue("Raw input", rawInput, "用户在手机端输入的时间戳字符串"),
+        explainedValue("Circuit input", normalizedInput.orEmpty(), "进入电路的固定格式 YYYY-MM-DD HH:mm:ss.ffffff"),
+        explainedValue("Proof generated", proofGenerated.toString(), "true 表示已经本地生成 regex_timestamp proof"),
+        explainedValue("Proof verified", proofVerified?.toString().orEmpty(), "true 表示已经本地验证生成出来的 proof"),
+        explainedValue("ZK timestamp valid", accepted?.toString().orEmpty(), "true 表示格式、字段范围、月份天数和闰年规则均通过，并且 proof 验证成功"),
+        explainedValue("Public output", proofInputs.firstOrNull().orEmpty(), "regex_timestamp 电路的公开输出，成功时为 1"),
+        explainedValue("Proof generation", provingMs?.let { "$it ms" }.orEmpty(), "手机端本地生成时间戳 proof 的耗时"),
+        explainedValue("Proof verification", verifyingMs?.let { "$it ms" }.orEmpty(), "手机端本地验证时间戳 proof 的耗时"),
+        explainedValue("Failure reason", errorMessage.orEmpty(), "失败时这里显示预处理或电路约束失败原因")
+    ).joinToString("\n")
+}
+
 /** 从规范化 Keystore payload 中提取指定字段。 */
 private fun payloadField(payload: String, key: String): String {
     return payload
@@ -1731,6 +1988,7 @@ private enum class OutputSection(val title: String) {
     SERVER("Server"),
     PERFORMANCE("Stats"),
     IPV4("IPv4"),
+    TIMESTAMP("Timestamp"),
     REPORT("Report"),
     VERIFICATION("Verification"),
     SIGNATURE("Signature"),

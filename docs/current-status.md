@@ -1,6 +1,6 @@
 # ZK-Location 项目状态文档
 
-更新时间：2026-05-29
+更新时间：2026-06-01
 
 本文档用于记录当前项目状态。后续每次修改关键功能、协议、接口、安全假设或实验流程时，应同步更新本文档，方便在新对话或上下文压缩后快速恢复项目背景。
 
@@ -132,6 +132,26 @@ C = Poseidon(x, y, salt)
 - 电路公开输出 `valid = 1`。如果格式或范围不满足约束，则无法生成有效 witness/proof。
 - 当前该功能只在 Android 本地生成并验证 proof，不接入服务端接口。
 
+新增时间戳正则 proof 电路：
+
+- 关键文件：`circuits/regex_timestamp.circom`。
+- 已生成 Groth16 proving artifacts，并接入 Android 客户端 Regex 模块进行本地 proof 生成和本地验证。
+- 私有输入为固定 26 个 ASCII 字节：`YYYY-MM-DD HH:mm:ss.ffffff`。
+- 电路保留 zkregex 状态机用于验证数字位数和分隔符，并增加日期时间语义约束：
+  - `1 <= month <= 12`。
+  - `1 <= day <= 31`。
+  - `0 <= hour <= 23`。
+  - `0 <= minute <= 59`。
+  - `0 <= second <= 59`。
+  - `0 <= microsecond <= 999999`。
+  - 4、6、9、11 月最多 30 天。
+  - 2 月按公历闰年规则最多 28 或 29 天：年份能被 400 整除，或能被 4 整除但不能被 100 整除时为闰年。
+- 任一格式或范围约束失败时，无法生成有效 witness/proof。
+- Android native witness 构建使用 `regex_timestamp_js/regex_timestamp.wasm`，注册 `regextimestamp_witness` 给 `regex_timestamp_final.zkey`。
+- 已通过 snarkjs 正反测试：
+  - `2024-02-29 23:59:59.999999` 和 `2000-02-29 00:00:00.000000` 可生成 witness，Groth16 proof 验证成功。
+  - `2023-02-29`、`1900-02-29`、`2024-02-30`、`2026-04-31`、`13 月`、`24 时`、`60 分`、`60 秒` 均被约束拒绝。
+
 ### 4.2 Rust 预处理层
 
 状态：已完成基础版本。
@@ -182,6 +202,12 @@ C = Poseidon(x, y, salt)
     - Android 端注册 `regexip_witness` 给 `regex_ip_final.zkey`，匹配 w2c2 生成的 `regexipInstantiate` 符号。
     - 已通过 `readelf` 确认 `libzk_location.so` 中 `areajudgeInstantiate` 和 `regexipInstantiate` 均为本地定义符号。
   - Results 中新增 `IPv4` 输出区，显示原始输入、规范化输入、公开输出、proof 生成/验证耗时和失败原因。
+  - Regex 弹窗新增时间戳 proof：
+    - 输入固定格式 `YYYY-MM-DD HH:mm:ss.ffffff`。
+    - `Generate timestamp proof` 在手机端本地生成 `regex_timestamp_final.zkey` proof。
+    - `Verify timestamp proof` 在手机端本地验证已经生成的时间戳 proof。
+    - 调用 native prover 前，Kotlin 会先执行与电路一致的字段范围、月份天数和公历闰年校验。
+    - Results 中新增 `Timestamp` 输出区，显示输入、公开输出、proof 生成/验证耗时和失败原因。
 
 关键文件：
 
@@ -190,10 +216,12 @@ C = Poseidon(x, y, salt)
 - `zk-location/android/app/src/main/java/com/example/moproapp/GnssLocationReader.kt`
 - `zk-location/android/app/src/main/java/com/example/moproapp/CampusOfflineMap.kt`
 
-新增 IPv4 proof 相关产物：
+新增 Regex proof 相关产物：
 
 - `zk-location/android/app/src/main/assets/regex_ip_final.zkey`
+- `zk-location/android/app/src/main/assets/regex_timestamp_final.zkey`
 - `circuits/regex_ip_js/regex_ip.wasm`
+- `circuits/regex_timestamp_js/regex_timestamp.wasm`
 - `zk-location/test-vectors/circom/regex_ip_final.zkey`
 
 当前客户端发送 `/verify-proof` 的最小数据：

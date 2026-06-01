@@ -1,3 +1,4 @@
 target/
 build/
 *.jar
+!android/gradle/wrapper/gradle-wrapper.jar

@@ -1,6 +1,6 @@
 /*
  * 文件功能：
- * - Rust build script，按目标平台准备 areajudge 和 regex_ip witness 计算代码。
+ * - Rust build script，按目标平台准备 areajudge、regex_ip 和 regex_timestamp witness 计算代码。
  *
  * 执行流程：
  * 1. cargo build 时自动执行 main。
@@ -14,6 +14,7 @@ fn main() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("android") {
         println!("cargo:rerun-if-changed=../circuits/areajudge_js/areajudge.wasm");
         println!("cargo:rerun-if-changed=../circuits/regex_ip_js/regex_ip.wasm");
+        println!("cargo:rerun-if-changed=../circuits/regex_timestamp_js/regex_timestamp.wasm");
 
         // rust_witness 每次 transpile_wasm 都会生成同名 libcircuit.a。
         // 因此 Android 目标必须一次性扫描包含全部 wasm 的目录；同时不能扫描整个 circuits，
@@ -31,6 +32,11 @@ fn main() {
             witness_wasm_dir.join("regex_ip.wasm"),
         )
         .expect("failed to copy regex_ip.wasm");
+        std::fs::copy(
+            "../circuits/regex_timestamp_js/regex_timestamp.wasm",
+            witness_wasm_dir.join("regex_timestamp.wasm"),
+        )
+        .expect("failed to copy regex_timestamp.wasm");
 
         rust_witness::transpile::transpile_wasm(witness_wasm_dir.to_string_lossy().to_string());
     } else {
