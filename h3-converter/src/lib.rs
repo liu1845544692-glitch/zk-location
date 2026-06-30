@@ -20,11 +20,18 @@ use num_bigint::BigUint;
 use serde_json::json;
 use std::str::FromStr;
 
+pub mod password;
+
 /// 缩放因子：将经纬度放大为整数
 const SCALE: f64 = 1e7;
 
 /// 电路当前固定需要 6 条边约束
 const CIRCOM_EDGE_COUNT: usize = 6;
+
+/// DOMAIN_TAG = little-endian ASCII packing of "ZK_LOCATION_REGEX_RECORD_V1".
+pub const REGEX_RECORD_DOMAIN_TAG_FIELD: &str =
+    "20296225498894752749272715267568488755079289184582638838394866522";
+pub const REGEX_RECORD_SCHEMA_VERSION: &str = "1";
 
 /// 电路输入的各个部分
 #[derive(Debug, Clone)]
@@ -127,6 +134,105 @@ pub fn generate_cell_boundary(lat: f64, lon: f64, resolution: u8) -> Result<Stri
     });
 
     serde_json::to_string_pretty(&output).map_err(|e| format!("JSON 序列化失败: {e}"))
+}
+
+/// 生成联合 Regex 记录 proof 的 Circom input。
+///
+/// 私有输入是七个规范化字段字节数组与 salt；公共输入是 record_commitment。
+pub fn generate_regex_record_circuit_input(
+    source_ip: &str,
+    destination_ip: &str,
+    timestamp: &str,
+    port: &str,
+    trans: &str,
+    unit: &str,
+    protocol: &str,
+) -> Result<String, String> {
+    let normalized = normalize_regex_record_fields(
+        source_ip,
+        destination_ip,
+        timestamp,
+        port,
+        trans,
+        unit,
+        protocol,
+    )?;
+    let salt = generate_salt()?;
+    generate_regex_record_circuit_input_with_salt(normalized, &salt)
+}
+
+pub fn generate_regex_record_circuit_input_with_salt(
+    normalized: RegexRecordNormalized,
+    salt: &str,
+) -> Result<String, String> {
+    let src_packed = pack_bytes_le(&normalized.source_ip)?;
+    let dst_packed = pack_bytes_le(&normalized.destination_ip)?;
+    let timestamp_packed = pack_bytes_le(&normalized.timestamp)?;
+    let port_packed = pack_bytes_le(&normalized.port)?;
+    let trans_packed = pack_bytes_le(&normalized.trans)?;
+    let unit_packed = pack_bytes_le(&normalized.unit)?;
+    let protocol_packed = pack_bytes_le(&normalized.protocol)?;
+    let record_commitment = regex_record_commitment_from_packed(
+        &src_packed,
+        &dst_packed,
+        &timestamp_packed,
+        &port_packed,
+        &trans_packed,
+        &unit_packed,
+        &protocol_packed,
+        salt,
+    )?;
+
+    let circuit_input = json!({
+        "record_commitment": [record_commitment.clone()],
+        "source_ip": decimal_bytes(&normalized.source_ip),
+        "destination_ip": decimal_bytes(&normalized.destination_ip),
+        "timestamp": decimal_bytes(&normalized.timestamp),
+        "port": decimal_bytes(&normalized.port),
+        "trans": decimal_bytes(&normalized.trans),
+        "unit": decimal_bytes(&normalized.unit),
+        "protocol": decimal_bytes(&normalized.protocol),
+        "salt": [salt]
+    });
+
+    let input = json!({
+        "recordCommitment": record_commitment,
+        "record_commitment": record_commitment,
+        "circuitInput": circuit_input,
+        "source_ip": decimal_bytes(&normalized.source_ip),
+        "destination_ip": decimal_bytes(&normalized.destination_ip),
+        "timestamp": decimal_bytes(&normalized.timestamp),
+        "port": decimal_bytes(&normalized.port),
+        "trans": decimal_bytes(&normalized.trans),
+        "unit": decimal_bytes(&normalized.unit),
+        "protocol": decimal_bytes(&normalized.protocol),
+        "salt": salt,
+        "schemaVersion": REGEX_RECORD_SCHEMA_VERSION,
+        "domainTag": REGEX_RECORD_DOMAIN_TAG_FIELD,
+        "packed": {
+            "srcPacked": src_packed,
+            "dstPacked": dst_packed,
+            "timestampPacked": timestamp_packed,
+            "portPacked": port_packed,
+            "transPacked": trans_packed,
+            "unitPacked": unit_packed,
+            "protocolPacked": protocol_packed
+        }
+    });
+
+    serde_json::to_string_pretty(&input)
+        .map_err(|e| format!("Regex record input JSON 序列化失败: {e}"))
+}
+
+#[derive(Debug, Clone)]
+pub struct RegexRecordNormalized {
+    pub source_ip: Vec<u8>,
+    pub destination_ip: Vec<u8>,
+    pub timestamp: Vec<u8>,
+    pub port: Vec<u8>,
+    pub trans: Vec<u8>,
+    pub unit: Vec<u8>,
+    pub protocol: Vec<u8>,
 }
 
 fn generate_location_parts(
@@ -278,11 +384,198 @@ fn poseidon_commitment(x: &str, y: &str, salt: &str) -> Result<String, String> {
     Ok(field_to_decimal(&commitment))
 }
 
-fn field_from_decimal(value: &str) -> Result<Fr, String> {
+fn regex_record_commitment_from_packed(
+    src_packed: &str,
+    dst_packed: &str,
+    timestamp_packed: &str,
+    port_packed: &str,
+    trans_packed: &str,
+    unit_packed: &str,
+    protocol_packed: &str,
+    salt: &str,
+) -> Result<String, String> {
+    let inputs = [
+        field_from_decimal(REGEX_RECORD_DOMAIN_TAG_FIELD)?,
+        field_from_decimal(REGEX_RECORD_SCHEMA_VERSION)?,
+        field_from_decimal(src_packed)?,
+        field_from_decimal(dst_packed)?,
+        field_from_decimal(timestamp_packed)?,
+        field_from_decimal(port_packed)?,
+        field_from_decimal(trans_packed)?,
+        field_from_decimal(unit_packed)?,
+        field_from_decimal(protocol_packed)?,
+        field_from_decimal(salt)?,
+    ];
+    let mut poseidon =
+        Poseidon::<Fr>::new_circom(10).map_err(|e| format!("Poseidon(10) 初始化失败: {e}"))?;
+    let commitment = poseidon
+        .hash(&inputs)
+        .map_err(|e| format!("Regex record Poseidon 哈希失败: {e}"))?;
+    Ok(field_to_decimal(&commitment))
+}
+
+fn normalize_regex_record_fields(
+    source_ip: &str,
+    destination_ip: &str,
+    timestamp: &str,
+    port: &str,
+    trans: &str,
+    unit: &str,
+    protocol: &str,
+) -> Result<RegexRecordNormalized, String> {
+    Ok(RegexRecordNormalized {
+        source_ip: normalize_ipv4(source_ip, "Source IP")?.into_bytes(),
+        destination_ip: normalize_ipv4(destination_ip, "Destination IP")?.into_bytes(),
+        timestamp: normalize_timestamp(timestamp)?.into_bytes(),
+        port: normalize_decimal_field(port, "Port", 5, 65535)?.into_bytes(),
+        trans: normalize_decimal_field(trans, "Trans", 5, 65535)?.into_bytes(),
+        unit: normalize_decimal_field(unit, "Unit", 3, 255)?.into_bytes(),
+        protocol: normalize_protocol(protocol)?,
+    })
+}
+
+fn normalize_ipv4(raw: &str, label: &str) -> Result<String, String> {
+    let parts: Vec<_> = raw.trim().split('.').collect();
+    if parts.len() != 4 {
+        return Err(format!(
+            "{label} must contain exactly four dot-separated segments"
+        ));
+    }
+    let normalized = parts
+        .iter()
+        .enumerate()
+        .map(|(index, part)| {
+            if part.is_empty() {
+                return Err(format!("{label} segment {} is empty", index + 1));
+            }
+            if part.len() > 3 || !part.chars().all(|c| c.is_ascii_digit()) {
+                return Err(format!("{label} segment {} must be 1..3 digits", index + 1));
+            }
+            let value: u16 = part
+                .parse()
+                .map_err(|_| format!("{label} segment {} is not numeric", index + 1))?;
+            if value > 255 {
+                return Err(format!("{label} segment {} must be in 0..255", index + 1));
+            }
+            Ok(format!("{value:03}"))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(normalized.join("."))
+}
+
+fn normalize_decimal_field(
+    raw: &str,
+    label: &str,
+    digits: usize,
+    max_value: u32,
+) -> Result<String, String> {
+    let value = raw.trim();
+    if value.is_empty() {
+        return Err(format!("{label} must not be empty"));
+    }
+    if value.len() > digits || !value.chars().all(|c| c.is_ascii_digit()) {
+        return Err(format!("{label} must be 1..{digits} decimal digits"));
+    }
+    let parsed: u32 = value
+        .parse()
+        .map_err(|_| format!("{label} must be a decimal number"))?;
+    if parsed > max_value {
+        return Err(format!("{label} must be in 0..{max_value}"));
+    }
+    Ok(format!("{parsed:0digits$}"))
+}
+
+fn normalize_timestamp(raw: &str) -> Result<String, String> {
+    let value = raw.trim();
+    if value.len() != 26 {
+        return Err("Timestamp must be exactly 26 bytes: YYYY-MM-DD HH:mm:ss.ffffff".to_string());
+    }
+    let bytes = value.as_bytes();
+    for (index, expected) in [
+        (4, b'-'),
+        (7, b'-'),
+        (10, b' '),
+        (13, b':'),
+        (16, b':'),
+        (19, b'.'),
+    ] {
+        if bytes[index] != expected {
+            return Err(format!("Timestamp separator at index {index} is invalid"));
+        }
+    }
+    for index in [
+        0usize, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18, 20, 21, 22, 23, 24, 25,
+    ] {
+        if !bytes[index].is_ascii_digit() {
+            return Err(format!("Timestamp digit at index {index} is invalid"));
+        }
+    }
+    let year: u32 = value[0..4].parse().unwrap();
+    let month: u32 = value[5..7].parse().unwrap();
+    let day: u32 = value[8..10].parse().unwrap();
+    let hour: u32 = value[11..13].parse().unwrap();
+    let minute: u32 = value[14..16].parse().unwrap();
+    let second: u32 = value[17..19].parse().unwrap();
+    let micros: u32 = value[20..26].parse().unwrap();
+    if !(1..=12).contains(&month) {
+        return Err("Timestamp month must be in 1..12".to_string());
+    }
+    if hour > 23 || minute > 59 || second > 59 || micros > 999_999 {
+        return Err("Timestamp time fields are out of range".to_string());
+    }
+    let leap = year % 400 == 0 || (year % 4 == 0 && year % 100 != 0);
+    let max_day = match month {
+        2 => {
+            if leap {
+                29
+            } else {
+                28
+            }
+        }
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    };
+    if day == 0 || day > max_day {
+        return Err("Timestamp day is invalid for the month/year".to_string());
+    }
+    Ok(value.to_string())
+}
+
+fn normalize_protocol(raw: &str) -> Result<Vec<u8>, String> {
+    let protocol = raw.trim();
+    let allowed = ["Modbus/TCP", "ARP", "DHCP", "TCP"];
+    if !allowed.contains(&protocol) {
+        return Err("Protocol must be one of Modbus/TCP, ARP, DHCP, TCP".to_string());
+    }
+    let mut bytes = vec![0u8; 10];
+    for (index, byte) in protocol.as_bytes().iter().enumerate() {
+        bytes[index] = *byte;
+    }
+    Ok(bytes)
+}
+
+fn pack_bytes_le(bytes: &[u8]) -> Result<String, String> {
+    let mut result = BigUint::from(0u8);
+    let mut factor = BigUint::from(1u16);
+    for byte in bytes {
+        result += BigUint::from(*byte) * &factor;
+        factor <<= 8usize;
+    }
+    if result >= BigUint::from(Fr::MODULUS) {
+        return Err("Packed bytes exceed BN254 scalar field".to_string());
+    }
+    Ok(result.to_string())
+}
+
+fn decimal_bytes(bytes: &[u8]) -> Vec<String> {
+    bytes.iter().map(|b| b.to_string()).collect()
+}
+
+pub(crate) fn field_from_decimal(value: &str) -> Result<Fr, String> {
     Fr::from_str(value).map_err(|_| format!("字段元素不是合法十进制数: {value}"))
 }
 
-fn field_to_decimal(value: &Fr) -> String {
+pub(crate) fn field_to_decimal(value: &Fr) -> String {
     BigUint::from_bytes_be(&value.into_bigint().to_bytes_be()).to_string()
 }
 
@@ -532,5 +825,69 @@ mod tests {
         let parsed: Value = serde_json::from_str(&boundary).unwrap();
         assert_eq!(parsed["resolution"], 15);
         assert_eq!(parsed["vertices"].as_array().unwrap().len(), 6);
+    }
+
+    #[test]
+    fn test_regex_record_commitment_vector() {
+        let normalized = normalize_regex_record_fields(
+            "140.80.0.121",
+            "140.80.0.11",
+            "2025-04-27 11:26:32.615683",
+            "502",
+            "19164",
+            "0",
+            "Modbus/TCP",
+        )
+        .unwrap();
+        let input = generate_regex_record_circuit_input_with_salt(normalized, "123456789").unwrap();
+        let parsed: Value = serde_json::from_str(&input).unwrap();
+
+        assert_eq!(parsed["source_ip"].as_array().unwrap().len(), 15);
+        assert_eq!(parsed["timestamp"].as_array().unwrap().len(), 26);
+        assert_eq!(
+            parsed["protocol"].as_array().unwrap()[9].as_str().unwrap(),
+            "80"
+        );
+        assert_eq!(
+            parsed["schemaVersion"].as_str().unwrap(),
+            REGEX_RECORD_SCHEMA_VERSION
+        );
+        assert_eq!(
+            parsed["domainTag"].as_str().unwrap(),
+            REGEX_RECORD_DOMAIN_TAG_FIELD
+        );
+        assert_eq!(
+            parsed["packed"]["srcPacked"].as_str().unwrap(),
+            "255440563022918789758224313315505201"
+        );
+        assert_eq!(
+            parsed["packed"]["dstPacked"].as_str().unwrap(),
+            "255420201385152623823462772520268849"
+        );
+        assert_eq!(
+            parsed["packed"]["timestampPacked"].as_str().unwrap(),
+            "82306687125341206781815303626542280137175899632352659741225010"
+        );
+        assert_eq!(
+            parsed["packed"]["portPacked"].as_str().unwrap(),
+            "215557156912"
+        );
+        assert_eq!(
+            parsed["packed"]["transPacked"].as_str().unwrap(),
+            "224247494961"
+        );
+        assert_eq!(parsed["packed"]["unitPacked"].as_str().unwrap(), "3158064");
+        assert_eq!(
+            parsed["packed"]["protocolPacked"].as_str().unwrap(),
+            "379031316676681247518541"
+        );
+        assert_eq!(
+            parsed["recordCommitment"].as_str().unwrap(),
+            "2100926186846456678906081929236440881456419680912292638040076029568147151390"
+        );
+        assert_eq!(
+            parsed["record_commitment"].as_str().unwrap(),
+            "2100926186846456678906081929236440881456419680912292638040076029568147151390"
+        );
     }
 }

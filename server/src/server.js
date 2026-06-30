@@ -12,7 +12,8 @@
 //   3. POST /keys/register-nonce    - 获取 key registration nonce
 //   4. POST /keys/register          - 绑定 attestation key
 //   5. GET/POST /nonce             - 获取 server nonce（用于签名防重放）
-//   6. POST /verify-proof           - 发送 ZK proof + Keystore 签名
+//   6. POST /verify-proof           - 发送位置 ZK proof + Keystore 签名
+//   7. POST /verify-regex-proof     - 发送 Regex record ZK proof
 //
 // /verify-proof 的验证链路：
 //   session token → active key → proof 验证 → 签名验证 → nonce 消费
@@ -20,6 +21,8 @@
 const fs = require("node:fs");
 const http = require("node:http");
 const path = require("node:path");
+const crypto = require("node:crypto");
+const { verifyRegexRecordWithArkworks } = require("./arkworks-regex-verifier");
 const { normalizePublicSignals, verifyPayload } = require("./proof-format");
 const { verifyKeystoreSignature } = require("./keystore-signature");
 const {
@@ -28,6 +31,10 @@ const {
 } = require("./key-attestation");
 const { DEFAULT_TTL_MS, NonceStore } = require("./nonce-store");
 const { AuthError, JsonAuthStore, publicUser } = require("./auth-store");
+const {
+  JsonPasswordRegistrationStore,
+  PasswordRegistrationStoreError,
+} = require("./password-registration-store");
 const {
   createInteractionLogger,
   requestMeta,
@@ -46,6 +53,14 @@ const {
 const DEFAULT_PORT = 3000;
 // HTTP body 最大 1MB（防止内存耗尽）
 const MAX_BODY_BYTES = 1024 * 1024;
+const BN254_SCALAR_MODULUS = BigInt(
+  "21888242871839275222246405745257275088548364400416034343698204186575808495617"
+);
+const BN254_BASE_MODULUS = BigInt(
+  "21888242871839275222246405745257275088696311157297823662689037894645226208583"
+);
+const PASSWORD_PROOF_VERSION = "groth16-bn254-v1";
+const PASSWORD_CIRCUIT_VERSION = "password-policy-commitment-v1";
 
 // ---- 创建并配置验证服务 ----
 // 返回 http.Server 实例，所有依赖可注入（方便测试）
@@ -54,8 +69,20 @@ function createVerifierServer(options = {}) {
   const vkPath = options.vkPath || process.env.VK_PATH || defaultVerificationKeyPath();
   // verificationKey: 已加载的 snarkjs 格式验证密钥对象
   const verificationKey = options.verificationKey || loadVerificationKey(vkPath);
+  // regexVkPath/regexVerificationKey: Regex record proof 的 Groth16 验证密钥。
+  const regexVkPath =
+    options.regexVkPath || process.env.REGEX_VK_PATH || defaultRegexRecordVerificationKeyPath();
+  const regexVerificationKey =
+    options.regexVerificationKey || loadVerificationKey(regexVkPath);
   // verifyProofPayload: proof 验证函数（可注入，默认用 proof-format.js 的 verifyPayload）
   const verifyProofPayload = options.verifyPayload || verifyPayload;
+  const passwordVkPath =
+    options.passwordVkPath ||
+    process.env.PASSWORD_VK_PATH ||
+    defaultPasswordVerificationKeyPath();
+  const passwordVerificationKey =
+    options.passwordVerificationKey || loadVerificationKey(passwordVkPath);
+  const verifyPasswordProofPayload = options.verifyPasswordPayload || verifyPayload;
 
   // nonceStore: nonce 防重放存储实例（基于内存 Map）
   const nonceStore = options.nonceStore || new NonceStore({
@@ -64,6 +91,8 @@ function createVerifierServer(options = {}) {
 
   // authStore: 用户认证与密钥存储实例（基于 JSON 文件）
   const authStore = options.authStore || new JsonAuthStore();
+  const passwordRegistrationStore =
+    options.passwordRegistrationStore || new JsonPasswordRegistrationStore();
 
   // interactionLogger: 交互日志记录器实例（JSONL 格式文件）
   const interactionLogger = options.interactionLogger || createInteractionLogger();
@@ -97,11 +126,228 @@ function createVerifierServer(options = {}) {
         circuit: "areajudge",
         verifier: "groth16/snarkjs",
         verificationKey: vkPath,
+        regexVerificationKey: regexVkPath,
+        passwordVerificationKey: passwordVkPath,
+        passwordVerificationKeySha256: fileSha256(passwordVkPath),
+        passwordRegistrationDb: passwordRegistrationStore.filePath,
+        passwordRegistrationCount: passwordRegistrationStore.count(),
         nonceTtlMs: nonceStore.ttlMs,
         pendingNonces: nonceStore.size(),
         interactionLog: interactionLogger.filePath,
         authDb: authStore.filePath,
       });
+      return;
+    }
+
+    // Password registration is proof-based and intentionally independent from
+    // the legacy plaintext-password /auth/register endpoint.
+    if (req.method === "POST" && pathname === "/password/register") {
+      let body = null;
+      let requestSummary = null;
+      try {
+        body = await readJsonBody(req);
+        const normalized = validatePasswordRegistrationRequest(body);
+        requestSummary = passwordRegistrationRequestSummary(normalized);
+
+        const verifyStarted = process.hrtime.bigint();
+        const proofResult = await verifyPasswordProofPayload(passwordVerificationKey, {
+          proof: normalized.proof,
+          publicSignals: normalized.publicSignals,
+        });
+        const serverVerifyTimeMs = elapsedMonotonicMs(verifyStarted);
+        if (!proofResult.valid) {
+          throw passwordRegistrationError(
+            422,
+            "PASSWORD_PROOF_INVALID",
+            "Password Groth16 proof verification failed"
+          );
+        }
+
+        if (passwordRegistrationStore.find(normalized.userId)) {
+          throw passwordRegistrationError(409, "USER_ID_EXISTS", "userId is already registered");
+        }
+        authStore.registerPasswordUser(normalized.userId);
+        let record;
+        try {
+          record = passwordRegistrationStore.register({
+            userId: normalized.userId,
+            salt: normalized.salt,
+            passwordCommitment: normalized.passwordCommitment,
+            proofVersion: PASSWORD_PROOF_VERSION,
+            circuitVersion: PASSWORD_CIRCUIT_VERSION,
+          });
+        } catch (error) {
+          authStore.removePasswordUser(normalized.userId);
+          throw error;
+        }
+        const response = {
+          success: true,
+          message: "Password registration succeeded",
+          userId: record.userId,
+          passwordCommitment: record.passwordCommitment,
+          proofVerified: true,
+          publicInputCount: normalized.publicSignals.length,
+          acceptedFormat: proofResult.acceptedFormat,
+          serverVerifyTimeMs,
+          requestTimeMs: Date.now() - startedAt,
+          proofVersion: record.proofVersion,
+          circuitVersion: record.circuitVersion,
+        };
+        sendJson(res, 201, response);
+        interactionLogger.log({
+          type: "password.register",
+          request: requestMeta(req, requestId, pathname),
+          requestSummary,
+          responseSummary: {
+            success: true,
+            userId: record.userId,
+            commitmentDigest: commitmentDigest(record.passwordCommitment),
+            proofVerified: true,
+            serverVerifyTimeMs,
+          },
+          statusCode: 201,
+          durationMs: Date.now() - startedAt,
+        });
+      } catch (error) {
+        const invalidJson = /^Invalid JSON:|^Request body too large/.test(error.message || "");
+        const statusCode = error.statusCode || (invalidJson ? 400 : 500);
+        const code =
+          error.code ||
+          (invalidJson ? "INVALID_REQUEST" : null) ||
+          (error instanceof AuthError && error.statusCode === 409 ? "USER_ID_EXISTS" : null) ||
+          (error instanceof PasswordRegistrationStoreError
+            ? "PASSWORD_REGISTRATION_DB_WRITE_FAILED"
+            : "PASSWORD_REGISTRATION_FAILED");
+        const response = {
+          success: false,
+          code,
+          error: error.message || String(error),
+        };
+        sendJson(res, statusCode, response);
+        interactionLogger.log({
+          type: "password.register",
+          request: requestMeta(req, requestId, pathname),
+          requestSummary,
+          responseSummary: {
+            success: false,
+            code,
+            error: response.error,
+          },
+          statusCode,
+          durationMs: Date.now() - startedAt,
+        });
+      }
+      return;
+    }
+
+    if (req.method === "GET" && pathname === "/password/login-parameters") {
+      try {
+        const requestUrl = new URL(req.url, "http://localhost");
+        const userId = validatePasswordUserId(requestUrl.searchParams.get("userId"));
+        const record = passwordRegistrationStore.find(userId);
+        if (!record) {
+          throw passwordRegistrationError(401, "INVALID_CREDENTIALS", "Invalid userId or password");
+        }
+        if (record.saltMissing || typeof record.salt !== "string") {
+          throw passwordRegistrationError(
+            409,
+            "ACCOUNT_REQUIRES_REREGISTRATION",
+            "Account requires re-registration before password login"
+          );
+        }
+        validatePasswordSalt(record.salt);
+        sendJson(res, 200, {
+          success: true,
+          salt: record.salt,
+          circuitVersion: record.circuitVersion,
+        });
+      } catch (error) {
+        sendJson(res, error.statusCode || 500, {
+          success: false,
+          code: error.code || "PASSWORD_LOGIN_PARAMETERS_FAILED",
+          message: error.message || String(error),
+        });
+      }
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/password/login") {
+      let requestSummary = null;
+      try {
+        const body = await readJsonBody(req);
+        const normalized = validatePasswordLoginRequest(body);
+        requestSummary = {
+          userId: normalized.userId,
+          commitmentDigest: commitmentDigest(normalized.passwordCommitment),
+        };
+        const record = passwordRegistrationStore.find(normalized.userId);
+        const valid = constantTimeCommitmentEqual(
+          normalized.passwordCommitment,
+          record?.passwordCommitment || "0"
+        ) && record !== null;
+        if (!valid) {
+          throw passwordRegistrationError(
+            401,
+            "INVALID_CREDENTIALS",
+            "Invalid userId or password"
+          );
+        }
+
+        let auth;
+        try {
+          auth = authStore.loginPasswordUser(normalized.userId, { createIfMissing: true });
+        } catch (error) {
+          if (error instanceof AuthError && error.statusCode === 401) {
+            throw passwordRegistrationError(
+              401,
+              "INVALID_CREDENTIALS",
+              "Invalid userId or password"
+            );
+          }
+          throw error;
+        }
+
+        const response = {
+          success: true,
+          message: "Login succeeded",
+          userId: normalized.userId,
+          token: auth.session.token,
+          expiresAt: auth.session.expiresAt,
+          expiresInMs: auth.session.expiresInMs,
+          requestTimeMs: Date.now() - startedAt,
+          replayProtection: false,
+        };
+        sendJson(res, 200, response);
+        interactionLogger.log({
+          type: "password.login",
+          request: requestMeta(req, requestId, pathname),
+          requestSummary,
+          responseSummary: {
+            success: true,
+            userId: normalized.userId,
+          },
+          statusCode: 200,
+          durationMs: Date.now() - startedAt,
+        });
+      } catch (error) {
+        const invalidJson = /^Invalid JSON:|^Request body too large/.test(error.message || "");
+        const statusCode = error.statusCode || (invalidJson ? 400 : 500);
+        const code = error.code || (invalidJson ? "INVALID_REQUEST" : "PASSWORD_LOGIN_FAILED");
+        const message = error.message || String(error);
+        sendJson(res, statusCode, {
+          success: false,
+          code,
+          message,
+        });
+        interactionLogger.log({
+          type: "password.login",
+          request: requestMeta(req, requestId, pathname),
+          requestSummary,
+          responseSummary: { success: false, code },
+          statusCode,
+          durationMs: Date.now() - startedAt,
+        });
+      }
       return;
     }
 
@@ -305,6 +551,91 @@ function createVerifierServer(options = {}) {
     }
 
     // =========================================================================
+    // POST /verify-regex-proof —— Regex 联合日志记录 proof 服务端验证
+    // =========================================================================
+    // 客户端必须显式上传 regex_record proof 和 publicSignals/inputs。
+    // 该接口只验证 Regex record Groth16 proof，不验证 TEE 签名，也不消费 nonce。
+    if (req.method === "POST" && pathname === "/verify-regex-proof") {
+      let payload = null;
+      try {
+        const { user } = authStore.authenticateAuthorizationHeader(req.headers.authorization);
+        payload = await readJsonBody(req);
+
+        const publicSignals = normalizePublicSignals(payload);
+        const publicInputCountValid = publicSignals.length === 1;
+        const proofResult = await verifyProofPayload(regexVerificationKey, payload);
+        let proofValidByVerifier = proofResult.valid;
+        let acceptedFormat = proofResult.acceptedFormat;
+        let attempts = proofResult.attempts;
+        if (!proofValidByVerifier && publicInputCountValid) {
+          const arkworksResult = await verifyRegexRecordWithArkworks({
+            proof: payload.proof ?? payload.proofResult?.proof,
+            inputs: publicSignals,
+            publicSignals,
+          });
+          attempts = [
+            ...attempts,
+            {
+              format: arkworksResult.format,
+              valid: arkworksResult.valid,
+              ...(arkworksResult.error ? { error: arkworksResult.error } : {}),
+            },
+          ];
+          if (arkworksResult.valid) {
+            proofValidByVerifier = true;
+            acceptedFormat = arkworksResult.format;
+          }
+        }
+        const proofValid = proofValidByVerifier && publicInputCountValid;
+        const result = {
+          circuit: "regex_record",
+          valid: proofValid,
+          proofValid,
+          recordCommitment: publicSignals[0] || null,
+          publicInputCount: publicSignals.length,
+          acceptedFormat,
+          attempts,
+          reason: publicInputCountValid ? null : "regex_record proof must have exactly one public input",
+          artifacts: {
+            client: payload.clientArtifacts || payload.artifacts?.client || null,
+            server: {
+              regexRecordZkeySha256: fileSha256(defaultRegexRecordZkeyPath()),
+              regexRecordVerificationKeySha256: fileSha256(regexVkPath),
+            },
+          },
+          user: {
+            id: user.id,
+            username: user.username,
+          },
+          clientMetrics: payload.metrics || payload.clientMetrics || null,
+        };
+
+        sendJson(res, 200, result);
+        interactionLogger.log({
+          type: "regex.proof.verify",
+          request: requestMeta(req, requestId, pathname),
+          requestSummary: summarizeProofRequest(payload),
+          responseSummary: summarizeVerifyResponse(result),
+          statusCode: 200,
+          durationMs: Date.now() - startedAt,
+        });
+      } catch (error) {
+        const status = error instanceof AuthError ? error.statusCode : 400;
+        const errorResponse = errorPayload(error, "REGEX_PROOF_VERIFY_FAILED");
+        sendJson(res, status, errorResponse);
+        interactionLogger.log({
+          type: "regex.proof.verify",
+          request: requestMeta(req, requestId, pathname),
+          requestSummary: payload ? summarizeProofRequest(payload) : null,
+          responseSummary: errorResponse,
+          statusCode: status,
+          durationMs: Date.now() - startedAt,
+        });
+      }
+      return;
+    }
+
+    // =========================================================================
     // POST /verify-proof —— 核心验证端点
     // =========================================================================
     // 验证流程（顺序有讲究——先不耗费 nonce，最后才消费）：
@@ -415,6 +746,10 @@ function createVerifierServer(options = {}) {
         "GET /nonce",
         "POST /nonce",
         "POST /verify-proof",
+        "POST /verify-regex-proof",
+        "POST /password/register",
+        "GET /password/login-parameters",
+        "POST /password/login",
         "POST /auth/register",
         "POST /auth/login",
         "POST /auth/logout",
@@ -438,6 +773,11 @@ function createVerifierServer(options = {}) {
     nonceStore,
     verificationKey,
     vkPath,
+    regexVerificationKey,
+    regexVkPath,
+    passwordRegistrationStore,
+    passwordVerificationKey,
+    passwordVkPath,
   };
   return server;
 }
@@ -452,6 +792,10 @@ if (require.main === module) {
   server.listen(port, "0.0.0.0", () => {
     console.log(`ZK Location verifier listening on http://0.0.0.0:${port}`);
     console.log(`Verification key: ${server.locals.vkPath}`);
+    console.log(`Regex verification key: ${server.locals.regexVkPath}`);
+    console.log(`Password verification key: ${server.locals.passwordVkPath}`);
+    console.log(`Password verification key SHA-256: ${fileSha256(server.locals.passwordVkPath)}`);
+    console.log(`Password registration DB: ${server.locals.passwordRegistrationStore.filePath}`);
     console.log(`Interaction log: ${server.locals.interactionLogger.filePath}`);
     console.log(`Auth DB: ${server.locals.authStore.filePath}`);
   });
@@ -535,10 +879,261 @@ function defaultVerificationKeyPath() {
   return path.resolve(__dirname, "../../circuits/verification_key.json");
 }
 
+function defaultRegexRecordVerificationKeyPath() {
+  return path.resolve(__dirname, "../keys/regex_record_verification_key.json");
+}
+
+function defaultPasswordVerificationKeyPath() {
+  return path.resolve(__dirname, "../keys/password_policy_commitment_verification_key.json");
+}
+
+function defaultRegexRecordZkeyPath() {
+  return path.resolve(__dirname, "../../circuits/regex_record_final.zkey");
+}
+
+function fileSha256(filePath) {
+  try {
+    return crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
+  } catch (_error) {
+    return null;
+  }
+}
+
 // ---- 从文件加载 snarkjs 格式的验证密钥 ----
 function loadVerificationKey(filePath) {
   const raw = fs.readFileSync(filePath, "utf8");
   return JSON.parse(raw);
+}
+
+function validatePasswordRegistrationRequest(body) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw passwordRegistrationError(400, "INVALID_REQUEST", "Request body must be an object");
+  }
+  for (const field of [
+    "password",
+    "confirmPassword",
+    "encryptedSalt",
+    "witness",
+    "dfa",
+    "paddedPassword",
+    "chunk0",
+    "chunk1",
+    "circuitInput",
+  ]) {
+    if (Object.prototype.hasOwnProperty.call(body, field)) {
+      throw passwordRegistrationError(
+        400,
+        "FORBIDDEN_PRIVATE_FIELD",
+        `Request must not contain private field: ${field}`
+      );
+    }
+  }
+
+  validatePasswordUserId(body.userId);
+  validatePasswordSalt(body.salt);
+  validateCanonicalFieldElement(body.passwordCommitment, "passwordCommitment");
+  if (!Array.isArray(body.publicSignals) || body.publicSignals.length !== 1) {
+    throw passwordRegistrationError(
+      400,
+      "INVALID_PUBLIC_SIGNALS",
+      "publicSignals must contain exactly one element"
+    );
+  }
+  validateCanonicalFieldElement(body.publicSignals[0], "publicSignals[0]");
+  if (body.publicSignals[0] !== body.passwordCommitment) {
+    throw passwordRegistrationError(
+      400,
+      "COMMITMENT_MISMATCH",
+      "publicSignals[0] must equal passwordCommitment"
+    );
+  }
+  if (!body.proof || typeof body.proof !== "object" || Array.isArray(body.proof)) {
+    throw passwordRegistrationError(400, "MISSING_PROOF", "proof object is required");
+  }
+  validatePasswordProofCoordinates(body.proof);
+
+  return {
+    userId: body.userId,
+    salt: body.salt,
+    passwordCommitment: body.passwordCommitment,
+    publicSignals: [...body.publicSignals],
+    proof: body.proof,
+  };
+}
+
+function validatePasswordLoginRequest(body) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw passwordRegistrationError(400, "INVALID_REQUEST", "Request body must be an object");
+  }
+  for (const field of [
+    "password",
+    "confirmPassword",
+    "salt",
+    "encryptedSalt",
+    "proof",
+    "publicSignals",
+    "witness",
+    "dfa",
+    "paddedPassword",
+    "chunk0",
+    "chunk1",
+    "circuitInput",
+  ]) {
+    if (Object.prototype.hasOwnProperty.call(body, field)) {
+      throw passwordRegistrationError(
+        400,
+        "FORBIDDEN_PRIVATE_FIELD",
+        `Request must not contain login field: ${field}`
+      );
+    }
+  }
+  validatePasswordUserId(body.userId);
+  validateCanonicalFieldElement(body.passwordCommitment, "passwordCommitment");
+  return {
+    userId: body.userId,
+    passwordCommitment: body.passwordCommitment,
+  };
+}
+
+function validatePasswordUserId(userId) {
+  if (typeof userId !== "string" || !/^[A-Za-z0-9_.@:-]{3,128}$/.test(userId)) {
+    throw passwordRegistrationError(
+      400,
+      "INVALID_USER_ID",
+      "userId must be 3-128 characters: letters, numbers, _, ., @, :, or -"
+    );
+  }
+  return userId;
+}
+
+function validatePasswordSalt(salt) {
+  validateCanonicalFieldElement(salt, "salt");
+  if (salt === "0") {
+    throw passwordRegistrationError(400, "INVALID_SALT", "salt must be non-zero");
+  }
+  return salt;
+}
+
+function constantTimeCommitmentEqual(left, right) {
+  const leftDigest = crypto.createHash("sha256").update(left).digest();
+  const rightDigest = crypto.createHash("sha256").update(right).digest();
+  return crypto.timingSafeEqual(leftDigest, rightDigest);
+}
+
+function validatePasswordProofCoordinates(proof) {
+  if (Array.isArray(proof.pi_a) && Array.isArray(proof.pi_b) && Array.isArray(proof.pi_c)) {
+    validateProofG1Array(proof.pi_a, "proof.pi_a");
+    validateProofG2Array(proof.pi_b, "proof.pi_b");
+    validateProofG1Array(proof.pi_c, "proof.pi_c");
+    return;
+  }
+  if (!proof.a || !proof.b || !proof.c) {
+    throw passwordRegistrationError(
+      400,
+      "INVALID_PROOF_FORMAT",
+      "proof must use snarkjs pi_a/pi_b/pi_c or mopro a/b/c coordinates"
+    );
+  }
+  validateProofG1Object(proof.a, "proof.a");
+  validateProofG2Object(proof.b, "proof.b");
+  validateProofG1Object(proof.c, "proof.c");
+}
+
+function validateProofG1Array(point, label) {
+  if (!Array.isArray(point) || point.length !== 3) {
+    throw passwordRegistrationError(400, "INVALID_PROOF_FORMAT", `${label} must have 3 coordinates`);
+  }
+  point.forEach((value, index) => validateProofCoordinate(value, `${label}[${index}]`));
+}
+
+function validateProofG2Array(point, label) {
+  if (!Array.isArray(point) || point.length !== 3) {
+    throw passwordRegistrationError(400, "INVALID_PROOF_FORMAT", `${label} must have 3 pairs`);
+  }
+  point.forEach((pair, index) => validateProofPair(pair, `${label}[${index}]`));
+}
+
+function validateProofG1Object(point, label) {
+  if (!point || typeof point !== "object") {
+    throw passwordRegistrationError(400, "INVALID_PROOF_FORMAT", `${label} must be an object`);
+  }
+  for (const coordinate of ["x", "y", "z"]) {
+    validateProofCoordinate(point[coordinate], `${label}.${coordinate}`);
+  }
+}
+
+function validateProofG2Object(point, label) {
+  if (!point || typeof point !== "object") {
+    throw passwordRegistrationError(400, "INVALID_PROOF_FORMAT", `${label} must be an object`);
+  }
+  for (const coordinate of ["x", "y", "z"]) {
+    validateProofPair(point[coordinate], `${label}.${coordinate}`);
+  }
+}
+
+function validateProofPair(pair, label) {
+  if (!Array.isArray(pair) || pair.length !== 2) {
+    throw passwordRegistrationError(400, "INVALID_PROOF_FORMAT", `${label} must have 2 elements`);
+  }
+  pair.forEach((value, index) => validateProofCoordinate(value, `${label}[${index}]`));
+}
+
+function validateProofCoordinate(value, label) {
+  if (typeof value !== "string" || !/^(0|[1-9][0-9]*)$/.test(value)) {
+    throw passwordRegistrationError(
+      400,
+      "INVALID_PROOF_COORDINATE",
+      `${label} must be a canonical decimal string`
+    );
+  }
+  if (BigInt(value) >= BN254_BASE_MODULUS) {
+    throw passwordRegistrationError(
+      400,
+      "INVALID_PROOF_COORDINATE",
+      `${label} must be smaller than the BN254 base field modulus`
+    );
+  }
+}
+
+function validateCanonicalFieldElement(value, label) {
+  if (typeof value !== "string" || !/^(0|[1-9][0-9]*)$/.test(value)) {
+    throw passwordRegistrationError(
+      400,
+      "INVALID_FIELD_ELEMENT",
+      `${label} must be a canonical decimal string`
+    );
+  }
+  if (BigInt(value) >= BN254_SCALAR_MODULUS) {
+    throw passwordRegistrationError(
+      400,
+      "INVALID_FIELD_ELEMENT",
+      `${label} must be smaller than the BN254 scalar field modulus`
+    );
+  }
+}
+
+function passwordRegistrationError(statusCode, code, message) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  error.code = code;
+  return error;
+}
+
+function passwordRegistrationRequestSummary(request) {
+  return {
+    userId: request.userId,
+    commitmentDigest: commitmentDigest(request.passwordCommitment),
+    publicInputCount: request.publicSignals.length,
+    proofSizeBytes: Buffer.byteLength(JSON.stringify(request.proof)),
+  };
+}
+
+function commitmentDigest(commitment) {
+  return crypto.createHash("sha256").update(commitment).digest("hex").slice(0, 16);
+}
+
+function elapsedMonotonicMs(started) {
+  return Number(process.hrtime.bigint() - started) / 1_000_000;
 }
 
 // ---- nonce 消费策略 ----
@@ -581,6 +1176,9 @@ function verifyNonceForProof(nonceStore, signatureResult, proofResult) {
 
 module.exports = {
   createVerifierServer,
+  defaultPasswordVerificationKeyPath,
+  validatePasswordLoginRequest,
+  validatePasswordRegistrationRequest,
   verifyNonceForProof,
 };
 

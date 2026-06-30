@@ -2,6 +2,24 @@
 zk-location-crash-log.txt
 *-crash-log.txt
 *.log
+*.apk
+*.aab
+local.properties
+.env
+
+# Reproducible build output and local tool caches.
+target/
+**/target/
+**/build/
+.gradle/
+**/.gradle/
+.gradle-codex/
+.cxx/
+**/.cxx/
+.externalNativeBuild/
+**/.externalNativeBuild/
+node_modules/
+**/node_modules/
 
 # Server source code is intentionally tracked:
 #   server/src/
@@ -16,6 +34,7 @@ server/node_modules/
 server/data/
 server/logs/
 server/reports/
+server/test-data/
 
 # Local server secrets/trust overrides. Do not upload machine-specific
 # trust roots such as manually added Huawei/OEM attestation roots.
@@ -29,6 +48,7 @@ circuits/*.r1cs
 circuits/*.sym
 circuits/*_0000.zkey
 circuits/*.wtns
+circuits/input_*.json
 circuits/proof_*.json
 circuits/public_*.json
 circuits/*_cpp/
@@ -37,3 +57,34 @@ circuits/areajudge_js/generate_witness.js
 circuits/areajudge_js/witness_calculator.js
 circuits/regex_timestamp_js/generate_witness.js
 circuits/regex_timestamp_js/witness_calculator.js
+circuits/port_final.zkey
+circuits/port_js/
+circuits/verification_key_port.json
+circuits/port_trans_js/generate_witness.js
+circuits/port_trans_js/witness_calculator.js
+circuits/verification_key_port_trans.json
+circuits/unit_js/generate_witness.js
+circuits/unit_js/witness_calculator.js
+circuits/verification_key_unit.json
+circuits/protocol_regex_js/generate_witness.js
+circuits/protocol_regex_js/witness_calculator.js
+circuits/verification_key_protocol_regex.json
+circuits/regex_record_js/generate_witness.js
+circuits/regex_record_js/witness_calculator.js
+zk-location/android/app/src/main/assets/port_final.zkey
+
+# One-off local proof/debug exports generated from manual location runs.
+zk-location/input_*.json
+zk-location/proof_*.json
+zk-location/public_*.json
+
+# Raw device telemetry is reproducible; retain concise final reports separately.
+device-test/
+device-test/*/logcat.txt
+device-test/*/meminfo*.txt
+diagnostics/
+docs/testing/password/device-logcat-*.txt
+docs/testing/password/device-server-interactions-*.jsonl
+docs/testing/password/device-registration-*.txt
+docs/testing/password/device-login-*.txt
+docs/agent-handoff.md

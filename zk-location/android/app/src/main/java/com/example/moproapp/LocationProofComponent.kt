@@ -1,16 +1,15 @@
 /*
  * 文件功能：
- * - Android 主业务界面，串联注册/登录、key 绑定、GNSS、H3/Circom proof、Keystore 签名、IPv4/时间戳正则 proof 和服务端验证。
+ * - Android 主业务界面，串联注册/登录、key 绑定、GNSS、位置 proof、Source/Destination IP、时间戳、端口、协议 proof 和结果查看。
  * - UI 只展示本次登录后产生的 active key 和 proof 状态，不复用历史 attestation 展示。
  *
  * 执行流程：
  * 1. 未登录时显示 AuthEntry，调用 /auth/register 或 /auth/login。
- * 2. 登录后显示地图、状态条、Location、Regex 和 Results。
+ * 2. 登录后显示地图、顶部栏、Location、Regex 和 Results。
  * 3. Generate new key and bind 重新生成 Keystore key，并提交 certificateChain 给服务端验证。
- * 4. GNSS 获取经纬度，Rust/mopro 生成 H3 半平面输入和 ZK proof。
- * 5. Keystore 对 public_commitment + server_nonce 签名。
- * 6. Send proof to server 提交 proof、public inputs 和签名，由服务端统一验证。
- * 7. Regex 面板分别使用 regex_ip 和 regex_timestamp 电路分步本地生成和验证 proof。
+ * 4. GNSS 获取经纬度并展示地图，Location 面板可用当前 H3 resolution 本地生成位置 proof。
+ * 5. Location 面板可用已绑定 Keystore key 签名当前 proof commitment，并把 proof + signature 发送到服务端验证。
+ * 6. Regex 面板支持 JSON 文本/文件导入，并分别使用 regex_ip、regex_timestamp、port_trans、unit 和 protocol_regex 电路分步本地生成和验证 proof。
  */
 package com.example.moproapp
 
@@ -33,6 +32,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -69,14 +69,22 @@ import uniffi.mopro.ProofLib
 import uniffi.mopro.generateCircomProof
 import uniffi.mopro.generateLocationCircuitInput
 import uniffi.mopro.verifyCircomProof
+import java.io.File
 import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URL
+import java.security.MessageDigest
 import org.json.JSONArray
 import org.json.JSONObject
 
 @Composable
-fun LocationProofComponent(modifier: Modifier = Modifier) {
+fun LocationProofComponent(
+    initialAuthToken: String? = null,
+    initialAuthUsername: String = "",
+    initialServerUrl: String = "",
+    onSessionEnded: () -> Unit = {},
+    modifier: Modifier = Modifier
+) {
     // context：当前 Android Context，用于权限、GNSS 和 assets 访问。
     val context = LocalContext.current
     // latitude/longitude：本次 GNSS 读取到的 WGS84 坐标，作为 proof 私有输入来源。
@@ -93,26 +101,50 @@ fun LocationProofComponent(modifier: Modifier = Modifier) {
     var verifyingTime by remember { mutableStateOf<String?>(null) }
     var valid by remember { mutableStateOf<String?>(null) }
     var publicInputs by remember { mutableStateOf<String?>(null) }
-    // ipv4Input/ipv4VerificationSummary：IPv4 正则 proof 本地验证输入和结果摘要。
-    var ipv4Input by remember { mutableStateOf("192.168.1.12") }
-    var ipv4VerificationSummary by remember { mutableStateOf<String?>(null) }
+    // sourceIpInput/sourceIpVerificationSummary：Source IP 正则 proof 本地验证输入和结果摘要。
+    var sourceIpInput by remember { mutableStateOf("192.168.1.12") }
+    var sourceIpVerificationSummary by remember { mutableStateOf<String?>(null) }
+    // destinationIpInput/destinationIpVerificationSummary：Destination IP 正则 proof 本地验证输入和结果摘要。
+    var destinationIpInput by remember { mutableStateOf("192.168.1.1") }
+    var destinationIpVerificationSummary by remember { mutableStateOf<String?>(null) }
+    // regexImportText/regexImportSummary：Regex JSON 导入文本和最近一次导入摘要。
+    var regexImportText by remember { mutableStateOf(defaultRegexImportJson()) }
+    var regexImportSummary by remember { mutableStateOf<String?>(null) }
     // timestampInput/timestampVerificationSummary：时间戳正则 proof 本地验证输入和结果摘要。
     var timestampInput by remember { mutableStateOf("2024-02-29 23:59:59.999999") }
     var timestampVerificationSummary by remember { mutableStateOf<String?>(null) }
+    // portInput/portVerificationSummary：端口正则 proof 本地验证输入和结果摘要。
+    var portInput by remember { mutableStateOf("502") }
+    var portVerificationSummary by remember { mutableStateOf<String?>(null) }
+    // transInput/transVerificationSummary：事务 ID proof 本地验证输入和结果摘要，复用 port_trans 电路的 0..65535 约束。
+    var transInput by remember { mutableStateOf("19164") }
+    var transVerificationSummary by remember { mutableStateOf<String?>(null) }
+    // unitInput/unitVerificationSummary：Unit proof 本地验证输入和结果摘要，复用公共数字字段模板的 0..255 约束。
+    var unitInput by remember { mutableStateOf("0") }
+    var unitVerificationSummary by remember { mutableStateOf<String?>(null) }
+    // protocolInput/protocolVerificationSummary：协议成员 proof 本地验证输入和结果摘要。
+    var protocolInput by remember { mutableStateOf("Modbus/TCP") }
+    var protocolVerificationSummary by remember { mutableStateOf<String?>(null) }
+    // regexRecordVerificationSummary：联合日志记录 proof 的生成/验证摘要，独立于七个单字段 proof。
+    var regexRecordVerificationSummary by remember { mutableStateOf<String?>(null) }
     // serverUrl：服务端 /verify-proof URL，其他接口会从它推导同 host 下路径。
-    var serverUrl by remember { mutableStateOf("http://192.168.2.217:3000/verify-proof") }
-    // serverResponse/reportSummary/performanceSummary：服务端验证、报告和性能统计显示内容。
-    var serverResponse by remember { mutableStateOf<String?>(null) }
-    var reportSummary by remember { mutableStateOf<String?>(null) }
-    var performanceSummary by remember { mutableStateOf<String?>(null) }
+    var serverUrl by remember(initialServerUrl) {
+        mutableStateOf(
+            initialServerUrl
+                .ifBlank { "http://192.168.2.217:3000" }
+                .trimEnd('/') + "/verify-proof"
+        )
+    }
     // keyRegistration：客户端本地最近一次 Keystore key 生成结果。
     var keyRegistration by remember { mutableStateOf<LocationKeyRegistration?>(null) }
     // signatureResult：当前 proof commitment 的 Keystore 签名结果，发送成功后清空防止复用。
     var signatureResult by remember { mutableStateOf<LocationCommitmentSignature?>(null) }
     // authUsername/authPassword/authToken/authSummary：账号输入和当前登录 session 状态。
-    var authUsername by remember { mutableStateOf("alice") }
-    var authPassword by remember { mutableStateOf("123456789") }
-    var authToken by remember { mutableStateOf<String?>(null) }
+    var authUsername by remember(initialAuthUsername) {
+        mutableStateOf(initialAuthUsername.ifBlank { "alice" })
+    }
+    var authPassword by remember { mutableStateOf("") }
+    var authToken by remember(initialAuthToken) { mutableStateOf(initialAuthToken) }
     var authSummary by remember { mutableStateOf<String?>(null) }
     // keyBindingSummary：服务端返回的 active key attestation 摘要，仅来自本次登录后的绑定/查询。
     var keyBindingSummary by remember { mutableStateOf<String?>(null) }
@@ -133,34 +165,64 @@ fun LocationProofComponent(modifier: Modifier = Modifier) {
     var isSendingProof by remember { mutableStateOf(false) }
     var isLocating by remember { mutableStateOf(false) }
     var isReporting by remember { mutableStateOf(false) }
-    var isVerifyingIpv4 by remember { mutableStateOf(false) }
+    var isVerifyingSourceIp by remember { mutableStateOf(false) }
+    var isVerifyingDestinationIp by remember { mutableStateOf(false) }
+    var isGeneratingRegexRecord by remember { mutableStateOf(false) }
+    var isVerifyingRegexRecord by remember { mutableStateOf(false) }
+    var isSendingRegexRecord by remember { mutableStateOf(false) }
     var isVerifyingTimestamp by remember { mutableStateOf(false) }
-    // regexProofResult/regexNormalizedInput：IPv4 正则 proof 的本地生成结果和规范化输入。
-    var regexProofResult by remember { mutableStateOf(emptyProofResult()) }
-    var regexNormalizedInput by remember { mutableStateOf<String?>(null) }
+    var isVerifyingPort by remember { mutableStateOf(false) }
+    var isVerifyingTrans by remember { mutableStateOf(false) }
+    var isVerifyingUnit by remember { mutableStateOf(false) }
+    var isVerifyingProtocol by remember { mutableStateOf(false) }
+    // sourceIpProofResult/sourceIpNormalizedInput：Source IP 正则 proof 的本地生成结果和规范化输入。
+    var sourceIpProofResult by remember { mutableStateOf(emptyProofResult()) }
+    var sourceIpNormalizedInput by remember { mutableStateOf<String?>(null) }
+    // destinationIpProofResult/destinationIpNormalizedInput：Destination IP 正则 proof 的本地生成结果和规范化输入。
+    var destinationIpProofResult by remember { mutableStateOf(emptyProofResult()) }
+    var destinationIpNormalizedInput by remember { mutableStateOf<String?>(null) }
     // timestampProofResult/timestampNormalizedInput：时间戳正则 proof 的本地生成结果和规范化输入。
     var timestampProofResult by remember { mutableStateOf(emptyProofResult()) }
     var timestampNormalizedInput by remember { mutableStateOf<String?>(null) }
-    // proofGenerationMs：最近一次客户端 proof 生成耗时，会随 proof 提交给服务端日志。
-    var proofGenerationMs by remember { mutableStateOf<Long?>(null) }
-    // clientProofTimes/serverVerifyTimes：本次 App 会话内的本地性能样本。
-    var clientProofTimes by remember { mutableStateOf<List<Long>>(emptyList()) }
-    var serverVerifyTimes by remember { mutableStateOf<List<Long>>(emptyList()) }
+    // portProofResult/portNormalizedInput：端口正则 proof 的本地生成结果和规范化输入。
+    var portProofResult by remember { mutableStateOf(emptyProofResult()) }
+    var portNormalizedInput by remember { mutableStateOf<String?>(null) }
+    // transProofResult/transNormalizedInput：事务 ID proof 的本地生成结果和规范化输入。
+    var transProofResult by remember { mutableStateOf(emptyProofResult()) }
+    var transNormalizedInput by remember { mutableStateOf<String?>(null) }
+    // unitProofResult/unitNormalizedInput：Unit proof 的本地生成结果和规范化输入。
+    var unitProofResult by remember { mutableStateOf(emptyProofResult()) }
+    var unitNormalizedInput by remember { mutableStateOf<String?>(null) }
+    // protocolProofResult/protocolNormalizedInput：协议成员 proof 的本地生成结果和规范化输入。
+    var protocolProofResult by remember { mutableStateOf(emptyProofResult()) }
+    var protocolNormalizedInput by remember { mutableStateOf<String?>(null) }
+    // regexRecordProofResult：联合日志记录 proof 结果。
+    var regexRecordProofResult by remember { mutableStateOf(emptyProofResult()) }
     // result：当前 Circom proof 结果，空 proof 表示还未生成。
     var result by remember {
         mutableStateOf(emptyProofResult())
     }
 
-    // zkeyPath：从 assets 复制出的 areajudge proving key 文件路径。
-    val zkeyPath = getFilePathFromAssets("areajudge_final.zkey")
+    // areajudgeZkeyPath：从 assets 复制出的位置 proving key 文件路径。
+    val areajudgeZkeyPath = getFilePathFromAssets("areajudge_final.zkey")
     // regexIpZkeyPath：从 assets 复制出的 IPv4 正则 proving key 文件路径。
     val regexIpZkeyPath = getFilePathFromAssets("regex_ip_final.zkey")
     // regexTimestampZkeyPath：从 assets 复制出的时间戳正则 proving key 文件路径。
     val regexTimestampZkeyPath = getFilePathFromAssets("regex_timestamp_final.zkey")
+    // portTransZkeyPath：从 assets 复制出的 Port/Trans 共用 proving key 文件路径。
+    val portTransZkeyPath = getFilePathFromAssets("port_trans_final.zkey")
+    // unitZkeyPath：从 assets 复制出的 Unit proving key 文件路径。
+    val unitZkeyPath = getFilePathFromAssets("unit_final.zkey")
+    // protocolRegexZkeyPath：从 assets 复制出的协议 proving key 文件路径。
+    val protocolRegexZkeyPath = getFilePathFromAssets("protocol_regex_final.zkey")
+    // regexRecordZkeyPath：从 assets 复制出的联合日志记录 proving key 文件路径。
+    val regexRecordZkeyPath = getFilePathFromAssets("regex_record_final.zkey")
     // isBusy：任意异步操作进行中时禁用主操作，避免状态交叉。
     val isBusy = isGenerating || isVerifying || isAuthenticating ||
         isBindingKey || isSigning || isSendingProof || isLocating || isReporting ||
-        isVerifyingIpv4 || isVerifyingTimestamp
+        isVerifyingSourceIp || isVerifyingDestinationIp || isVerifyingTimestamp || isVerifyingPort || isVerifyingTrans ||
+        isVerifyingUnit || isVerifyingProtocol ||
+        isGeneratingRegexRecord || isVerifyingRegexRecord || isSendingRegexRecord
     // clearProofState：位置、resolution 或 key 改变后清除旧 proof/signature/server response。
     val clearProofState = {
         provingTime = null
@@ -168,8 +230,6 @@ fun LocationProofComponent(modifier: Modifier = Modifier) {
         valid = null
         publicInputs = null
         signatureResult = null
-        serverResponse = null
-        proofGenerationMs = null
         result = emptyProofResult()
         selectedOutput = null
     }
@@ -177,6 +237,121 @@ fun LocationProofComponent(modifier: Modifier = Modifier) {
     val resetAfterLocation = {
         clearProofState()
         operationStatus = OperationStatus("GNSS", true, locationSummary ?: "Location updated")
+    }
+    // clear...：导入或手动修改 Regex 输入后清空对应旧 proof，避免新输入复用旧 proof。
+    val clearSourceIpProof = {
+        sourceIpProofResult = emptyProofResult()
+        sourceIpNormalizedInput = null
+        sourceIpVerificationSummary = null
+    }
+    val clearDestinationIpProof = {
+        destinationIpProofResult = emptyProofResult()
+        destinationIpNormalizedInput = null
+        destinationIpVerificationSummary = null
+    }
+    val clearTimestampProof = {
+        timestampProofResult = emptyProofResult()
+        timestampNormalizedInput = null
+        timestampVerificationSummary = null
+    }
+    val clearPortProof = {
+        portProofResult = emptyProofResult()
+        portNormalizedInput = null
+        portVerificationSummary = null
+    }
+    val clearTransProof = {
+        transProofResult = emptyProofResult()
+        transNormalizedInput = null
+        transVerificationSummary = null
+    }
+    val clearUnitProof = {
+        unitProofResult = emptyProofResult()
+        unitNormalizedInput = null
+        unitVerificationSummary = null
+    }
+    val clearProtocolProof = {
+        protocolProofResult = emptyProofResult()
+        protocolNormalizedInput = null
+        protocolVerificationSummary = null
+    }
+    val clearRegexRecordProof = {
+        regexRecordProofResult = emptyProofResult()
+        regexRecordVerificationSummary = null
+    }
+    // applyRegexImport：解析 JSON 文本或文件内容，并把识别出的字段填入 Regex 面板。
+    val applyRegexImport = { jsonText: String ->
+        try {
+            val imported = parseRegexImportValues(jsonText)
+            val appliedFields = mutableListOf<String>()
+            imported.sourceIp?.let {
+                sourceIpInput = it
+                clearSourceIpProof()
+                clearRegexRecordProof()
+                appliedFields += "Source IP=$it"
+            }
+            imported.destinationIp?.let {
+                destinationIpInput = it
+                clearDestinationIpProof()
+                clearRegexRecordProof()
+                appliedFields += "Destination IP=$it"
+            }
+            imported.timestamp?.let {
+                timestampInput = it
+                clearTimestampProof()
+                clearRegexRecordProof()
+                appliedFields += "Timestamp=$it"
+            }
+            imported.port?.let {
+                portInput = it
+                clearPortProof()
+                clearRegexRecordProof()
+                appliedFields += "Port=$it"
+            }
+            imported.trans?.let {
+                transInput = it
+                clearTransProof()
+                clearRegexRecordProof()
+                appliedFields += "Trans=$it"
+            }
+            imported.unit?.let {
+                unitInput = it
+                clearUnitProof()
+                clearRegexRecordProof()
+                appliedFields += "Unit=$it"
+            }
+            imported.protocol?.let {
+                protocolInput = it
+                clearProtocolProof()
+                clearRegexRecordProof()
+                appliedFields += "Protocol=$it"
+            }
+
+            regexImportSummary = null
+        } catch (e: Exception) {
+            val message = e.message ?: e.toString()
+            regexImportSummary = explainedValue("Import failed", message, "JSON 文本或文件内容无法解析为支持的字段")
+            operationStatus = OperationStatus("Regex JSON import", false, regexImportSummary ?: message)
+        }
+    }
+    // regexJsonFileLauncher：从手机选择 JSON/text 文件，读取内容后复用同一套导入逻辑。
+    val regexJsonFileLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            try {
+                val importedText = context.contentResolver
+                    .openInputStream(uri)
+                    ?.bufferedReader()
+                    ?.use { it.readText() }
+                    ?: error("Unable to read selected file")
+                regexImportText = importedText
+                applyRegexImport(importedText)
+            } catch (e: Exception) {
+                val message = e.message ?: e.toString()
+                regexImportSummary = explainedValue("Import failed", message, "读取手机文件失败")
+                operationStatus = OperationStatus("Regex JSON file", false, regexImportSummary ?: message)
+            }
+        }
     }
     // locationPermissionLauncher：请求精确定位权限后的回调入口。
     val locationPermissionLauncher = rememberLauncherForActivityResult(
@@ -254,6 +429,34 @@ fun LocationProofComponent(modifier: Modifier = Modifier) {
         }.start()
     }
 
+    // logoutAction：从主页面顶部退出当前 session，并清理本地 key/proof 状态。
+    val logoutAction = {
+        val token = authToken
+        if (token == null) {
+            operationStatus = OperationStatus("Logout", false, "Already logged out")
+        } else {
+            isAuthenticating = true
+            Thread {
+                try {
+                    val summary = postLogout(serverUrl, token)
+                    authToken = null
+                    authSummary = null
+                    keyBindingSummary = null
+                    keyRegistration = null
+                    clearProofState()
+                    operationStatus = OperationStatus("Logout", true, summary)
+                    onSessionEnded()
+                } catch (e: Exception) {
+                    val message = e.message ?: e.toString()
+                    error = message
+                    operationStatus = OperationStatus("Logout", false, message)
+                } finally {
+                    isAuthenticating = false
+                }
+            }.start()
+        }
+    }
+
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -282,7 +485,7 @@ fun LocationProofComponent(modifier: Modifier = Modifier) {
             AppHeader(
                 username = authUsername,
                 serverUrl = serverUrl,
-                isBusy = isBusy
+                onLogout = logoutAction
             )
 
             Surface(
@@ -304,14 +507,6 @@ fun LocationProofComponent(modifier: Modifier = Modifier) {
                     )
                 }
             }
-
-            StatusStrip(
-                hasKey = keyBindingSummary != null,
-                hasLocation = latitude != null && longitude != null,
-                hasProof = result.proof.a.x.isNotEmpty(),
-                hasSignature = signatureResult != null,
-                serverAccepted = serverResponse?.contains("Valid: true") == true
-            )
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -363,37 +558,13 @@ fun LocationProofComponent(modifier: Modifier = Modifier) {
             selectedResolution = selectedResolution,
             resolutionMenuExpanded = resolutionMenuExpanded,
             isBusy = isBusy,
-            hasLocation = latitude != null && longitude != null,
-            hasProof = result.proof.a.x.isNotEmpty(),
-            hasCommitment = result.inputs.isNotEmpty(),
             isLoggedIn = authToken != null,
+            hasKey = keyRegistration != null,
+            hasLocation = latitude != null && longitude != null,
+            hasProof = result.inputs.isNotEmpty(),
+            hasSignature = signatureResult != null,
             onDismiss = { isActionSetOpen = false },
             onServerUrlChange = { serverUrl = it },
-            onLogout = {
-                val token = authToken
-                if (token == null) {
-                    operationStatus = OperationStatus("Logout", false, "Already logged out")
-                } else {
-                    isAuthenticating = true
-                    Thread {
-                        try {
-                            val summary = postLogout(serverUrl, token)
-                            authToken = null
-                            authSummary = null
-                            keyBindingSummary = null
-                            keyRegistration = null
-                            clearProofState()
-                            operationStatus = OperationStatus("Logout", true, summary)
-                        } catch (e: Exception) {
-                            val message = e.message ?: e.toString()
-                            error = message
-                            operationStatus = OperationStatus("Logout", false, message)
-                        } finally {
-                            isAuthenticating = false
-                        }
-                    }.start()
-                }
-            },
             onVerifyKey = {
                 val token = authToken
                 if (token == null) {
@@ -415,41 +586,6 @@ fun LocationProofComponent(modifier: Modifier = Modifier) {
                         }
                     }.start()
                 }
-            },
-            onFetchStats = {
-                isReporting = true
-                Thread {
-                    try {
-                        val serverStats = fetchServerStats(serverUrl)
-                        performanceSummary = buildPerformanceSummary(
-                            clientProofTimes = clientProofTimes,
-                            serverVerifyTimes = serverVerifyTimes,
-                            serverStats = serverStats
-                        )
-                        operationStatus = OperationStatus("Stats", true, performanceSummary ?: "No stats")
-                    } catch (e: Exception) {
-                        val message = e.message ?: e.toString()
-                        error = message
-                        operationStatus = OperationStatus("Stats", false, message)
-                    } finally {
-                        isReporting = false
-                    }
-                }.start()
-            },
-            onExportReport = {
-                isReporting = true
-                Thread {
-                    try {
-                        reportSummary = fetchExperimentReport(serverUrl)
-                        operationStatus = OperationStatus("Report", true, reportSummary ?: "No report")
-                    } catch (e: Exception) {
-                        val message = e.message ?: e.toString()
-                        error = message
-                        operationStatus = OperationStatus("Report", false, message)
-                    } finally {
-                        isReporting = false
-                    }
-                }.start()
             },
             onBindKey = {
                 val token = authToken
@@ -501,6 +637,198 @@ fun LocationProofComponent(modifier: Modifier = Modifier) {
                     locationPermissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
                 }
             },
+            onGenerateProof = {
+                val lat = latitude
+                val lon = longitude
+                if (lat == null || lon == null) {
+                    val message = "Run GNSS before generating location proof"
+                    error = message
+                    operationStatus = OperationStatus("Generate proof", false, message)
+                } else {
+                    isGenerating = true
+                    error = null
+                    signatureResult = null
+                    startProofWorker("location-proof-generate") {
+                        try {
+                            val startedAt = System.currentTimeMillis()
+                            val circuitInput = generateLocationCircuitInput(
+                                lat,
+                                lon,
+                                selectedResolution.toUByte()
+                            )
+                            val proof = generateCircomProof(
+                                areajudgeZkeyPath,
+                                circuitInput,
+                                ProofLib.ARKWORKS
+                            )
+                            val elapsedMs = System.currentTimeMillis() - startedAt
+                            result = proof
+                            provingTime = "$elapsedMs ms"
+                            verifyingTime = null
+                            valid = null
+                            publicInputs = listOf(
+                                compactValue("Generated", "true"),
+                                compactValue("Time", "$elapsedMs ms"),
+                                compactValue("Area", "H3 r$selectedResolution"),
+                                compactValue("Location", "${formatCoordinate(lat)}, ${formatCoordinate(lon)}"),
+                                formatProofSummary(proof)
+                            ).joinToString("\n")
+                            operationStatus = OperationStatus(
+                                "Generate proof",
+                                true,
+                                publicInputs ?: "Location proof generated"
+                            )
+                        } catch (e: Exception) {
+                            val message = e.message ?: e.toString()
+                            result = emptyProofResult()
+                            provingTime = null
+                            publicInputs = null
+                            error = message
+                            operationStatus = OperationStatus("Generate proof", false, message)
+                        } finally {
+                            isGenerating = false
+                        }
+                    }
+                }
+            },
+            onVerifyProof = {
+                if (result.inputs.isEmpty()) {
+                    val message = "Generate proof before verifying location proof"
+                    error = message
+                    operationStatus = OperationStatus("Verify proof", false, message)
+                } else {
+                    isVerifying = true
+                    error = null
+                    startProofWorker("location-proof-verify") {
+                        try {
+                            val startedAt = System.currentTimeMillis()
+                            val verified = verifyCircomProof(
+                                areajudgeZkeyPath,
+                                result,
+                                ProofLib.ARKWORKS
+                            )
+                            val elapsedMs = System.currentTimeMillis() - startedAt
+                            verifyingTime = "$elapsedMs ms"
+                            valid = verified.toString()
+                            operationStatus = OperationStatus(
+                                "Verify proof",
+                                verified,
+                                listOf(
+                                    compactValue("Verified", verified.toString()),
+                                    compactValue("Time", "$elapsedMs ms")
+                                ).joinToString("\n")
+                            )
+                        } catch (e: Exception) {
+                            val message = e.message ?: e.toString()
+                            verifyingTime = null
+                            valid = "false"
+                            error = message
+                            operationStatus = OperationStatus("Verify proof", false, message)
+                        } finally {
+                            isVerifying = false
+                        }
+                    }
+                }
+            },
+            onSignCommitment = {
+                val token = authToken
+                val commitment = result.inputs.firstOrNull().orEmpty()
+                when {
+                    token == null -> {
+                        val message = "Login before signing commitment"
+                        error = message
+                        operationStatus = OperationStatus("Sign commitment", false, message)
+                    }
+
+                    keyRegistration == null -> {
+                        val message = "Generate new key and bind before signing commitment"
+                        error = message
+                        operationStatus = OperationStatus("Sign commitment", false, message)
+                    }
+
+                    commitment.isBlank() -> {
+                        val message = "Generate proof before signing commitment"
+                        error = message
+                        operationStatus = OperationStatus("Sign commitment", false, message)
+                    }
+
+                    else -> {
+                        isSigning = true
+                        error = null
+                        Thread {
+                            try {
+                                val nonce = requestServerNonce(serverUrl)
+                                val signature = KeystoreLocationSigner.signCommitment(commitment, nonce.nonce)
+                                signatureResult = signature
+                                operationStatus = OperationStatus(
+                                    "Sign commitment",
+                                    signature.verifiedLocally,
+                                    listOf(
+                                        explainedValue("Signed", "true", "已使用 Android Keystore 私钥签名当前 proof commitment"),
+                                        explainedValue("Commitment", shortValue(commitment), "签名 payload 中绑定的 ZK proof 公开承诺"),
+                                        explainedValue("Nonce", shortValue(nonce.nonce), "服务端 /nonce 下发的一次性防重放随机数"),
+                                        explainedValue("Local signature check", signature.verifiedLocally.toString(), "客户端本地用 leaf public key 自检签名")
+                                    ).joinToString("\n")
+                                )
+                            } catch (e: Exception) {
+                                val message = e.message ?: e.toString()
+                                signatureResult = null
+                                error = message
+                                operationStatus = OperationStatus("Sign commitment", false, message)
+                            } finally {
+                                isSigning = false
+                            }
+                        }.start()
+                    }
+                }
+            },
+            onSendProof = {
+                val token = authToken
+                val signature = signatureResult
+                when {
+                    token == null -> {
+                        val message = "Login before sending proof"
+                        error = message
+                        operationStatus = OperationStatus("Send proof to server", false, message)
+                    }
+
+                    keyRegistration == null -> {
+                        val message = "Generate new key and bind before sending proof"
+                        error = message
+                        operationStatus = OperationStatus("Send proof to server", false, message)
+                    }
+
+                    result.inputs.isEmpty() -> {
+                        val message = "Generate proof before sending proof"
+                        error = message
+                        operationStatus = OperationStatus("Send proof to server", false, message)
+                    }
+
+                    signature == null -> {
+                        val message = "Sign commitment before sending proof"
+                        error = message
+                        operationStatus = OperationStatus("Send proof to server", false, message)
+                    }
+
+                    else -> {
+                        isSendingProof = true
+                        error = null
+                        Thread {
+                            try {
+                                val summary = postProofToServer(serverUrl, token, result, signature)
+                                operationStatus = OperationStatus("Send proof to server", true, summary)
+                                signatureResult = null
+                            } catch (e: Exception) {
+                                val message = e.message ?: e.toString()
+                                error = message
+                                operationStatus = OperationStatus("Send proof to server", false, message)
+                            } finally {
+                                isSendingProof = false
+                            }
+                        }.start()
+                    }
+                }
+            },
             onResolutionMenuChange = { resolutionMenuExpanded = it },
             onSelectResolution = { resolution ->
                 selectedResolution = resolution
@@ -511,213 +839,247 @@ fun LocationProofComponent(modifier: Modifier = Modifier) {
                     success = true,
                     message = "H3 resolution set to $resolution"
                 )
-            },
-            onGenerateProof = {
-                val currentLat = latitude
-                val currentLon = longitude
-                if (currentLat == null || currentLon == null) {
-                    val message = "Get GNSS location before generating proof"
-                    error = message
-                    operationStatus = OperationStatus("Proof", false, message)
-                } else {
-                    isGenerating = true
-                    provingTime = null
-                    verifyingTime = null
-                    valid = null
-                    publicInputs = null
-                    signatureResult = null
-                    error = null
-                    startProofWorker("location-proof-generate") {
-                        try {
-                            val input = generateLocationCircuitInput(
-                                currentLat,
-                                currentLon,
-                                selectedResolution.toUByte()
-                            )
-                            val startTime = System.currentTimeMillis()
-                            result = generateCircomProof(zkeyPath, input, ProofLib.ARKWORKS)
-                            val elapsed = System.currentTimeMillis() - startTime
-                            proofGenerationMs = elapsed
-                            clientProofTimes = clientProofTimes + elapsed
-                            provingTime = "$elapsed ms"
-                            publicInputs = formatProofSummary(result)
-                            serverResponse = null
-                            operationStatus = OperationStatus(
-                                "Proof",
-                                true,
-                                "Proof generated in ${provingTime ?: "-"}"
-                            )
-                        } catch (e: Exception) {
-                            val message = e.message ?: e.toString()
-                            error = message
-                            operationStatus = OperationStatus("Proof", false, message)
-                        } finally {
-                            isGenerating = false
-                        }
-                    }
-                }
-            },
-            onVerifyProof = {
-                isVerifying = true
-                verifyingTime = null
-                error = null
-                startProofWorker("location-proof-verify") {
-                    try {
-                        val startTime = System.currentTimeMillis()
-                        val verified = verifyCircomProof(zkeyPath, result, ProofLib.ARKWORKS)
-                        verifyingTime = "${System.currentTimeMillis() - startTime} ms"
-                        valid = verified.toString()
-                        operationStatus = OperationStatus(
-                            "Verification",
-                            verified,
-                            "Valid: $verified, time: ${verifyingTime ?: "-"}"
-                        )
-                    } catch (e: Exception) {
-                        val message = e.message ?: e.toString()
-                        error = message
-                        operationStatus = OperationStatus("Verification", false, message)
-                    } finally {
-                        isVerifying = false
-                    }
-                }
-            },
-            onSignCommitment = {
-                if (authToken == null || keyBindingSummary == null) {
-                    val message = "Login and bind key before signing"
-                    error = message
-                    operationStatus = OperationStatus("Signature", false, message)
-                } else {
-                    isSigning = true
-                    signatureResult = null
-                    error = null
-                    Thread {
-                        try {
-                            val commitment = result.inputs.firstOrNull()
-                                ?: error("Missing public commitment. Generate proof first.")
-                            val serverNonce = requestServerNonce(serverUrl).nonce
-                            signatureResult = KeystoreLocationSigner.signCommitment(
-                                publicCommitment = commitment,
-                                serverNonce = serverNonce
-                            )
-                            keyRegistration = KeystoreLocationSigner.ensureKey(
-                                serverNonce.toByteArray()
-                            )
-                            operationStatus = OperationStatus(
-                                "Signature",
-                                true,
-                                "Commitment signed with server nonce ${shortValue(serverNonce)}"
-                            )
-                        } catch (e: Exception) {
-                            val message = e.message ?: e.toString()
-                            error = message
-                            operationStatus = OperationStatus("Signature", false, message)
-                        } finally {
-                            isSigning = false
-                        }
-                    }.start()
-                }
-            },
-            onSendProofToServer = {
-                if (result.proof.a.x.isEmpty()) {
-                    val message = "Generate proof before sending to server"
-                    error = message
-                    operationStatus = OperationStatus("Server verify", false, message)
-                } else if (signatureResult == null) {
-                    val message = "Sign commitment before sending to server"
-                    error = message
-                    operationStatus = OperationStatus("Server verify", false, message)
-                } else if (authToken == null || keyBindingSummary == null) {
-                    val message = "Login and bind key before sending proof to server"
-                    error = message
-                    operationStatus = OperationStatus("Server verify", false, message)
-                } else {
-                    isSendingProof = true
-                    serverResponse = null
-                    error = null
-                    Thread {
-                        try {
-                            val signature = signatureResult
-                                ?: error("Sign commitment before sending to server")
-                            val token = authToken
-                                ?: error("Login before sending proof to server")
-                            val response = postProofToServer(
-                                serverUrl = serverUrl,
-                                proofResult = result,
-                                signatureResult = signature,
-                                bearerToken = token,
-                                h3Resolution = selectedResolution,
-                                provingTimeMs = proofGenerationMs
-                            )
-                            serverVerifyTimes = serverVerifyTimes + response.elapsedMs
-                            serverResponse = response.summary
-                            if (response.valid) {
-                                signatureResult = null
-                            }
-                            operationStatus = OperationStatus(
-                                title = "Server verify",
-                                success = response.valid,
-                                message = serverResponse ?: "No response"
-                            )
-                        } catch (e: Exception) {
-                            val message = e.message ?: e.toString()
-                            error = message
-                            serverResponse = message
-                            operationStatus = OperationStatus("Server verify", false, message)
-                        } finally {
-                            isSendingProof = false
-                        }
-                    }.start()
-                }
             }
         )
     }
 
+    val generateRegexRecordProof = {
+        isGeneratingRegexRecord = true
+        error = null
+        startProofWorker("regex-record-proof-generate") {
+            try {
+                val recordInput = buildRegexRecordCircuitInput(regexImportText)
+                val startedAt = System.currentTimeMillis()
+                val proof = generateCircomProof(
+                    regexRecordZkeyPath,
+                    recordInput.circuitInput,
+                    ProofLib.ARKWORKS
+                )
+                val elapsedMs = System.currentTimeMillis() - startedAt
+                require(proof.inputs.firstOrNull() == recordInput.recordCommitment) {
+                    "Generated proof public input mismatch: expected recordCommitment ${shortValue(recordInput.recordCommitment)}, got ${shortValue(proof.inputs.firstOrNull().orEmpty())}"
+                }
+                regexRecordProofResult = proof
+                regexRecordVerificationSummary = formatRegexRecordVerificationSummary(
+                    recordInput = recordInput,
+                    proofGenerated = true,
+                    proofVerified = null,
+                    accepted = null,
+                    proofInputs = proof.inputs,
+                    provingMs = elapsedMs,
+                    verifyingMs = null,
+                    errorMessage = null
+                )
+                operationStatus = OperationStatus(
+                    "Record proof generation",
+                    true,
+                    regexRecordVerificationSummary ?: "Record proof generated"
+                )
+            } catch (e: Exception) {
+                val message = e.message ?: e.toString()
+                regexRecordProofResult = emptyProofResult()
+                regexRecordVerificationSummary = formatRegexRecordVerificationSummary(
+                    recordInput = null,
+                    proofGenerated = false,
+                    proofVerified = null,
+                    accepted = false,
+                    proofInputs = emptyList(),
+                    provingMs = null,
+                    verifyingMs = null,
+                    errorMessage = message
+                )
+                error = message
+                operationStatus = OperationStatus(
+                    "Record proof generation",
+                    false,
+                    regexRecordVerificationSummary ?: message
+                )
+            } finally {
+                isGeneratingRegexRecord = false
+            }
+        }
+    }
+
+    val verifyRegexRecordProof = {
+        if (regexRecordProofResult.proof.a.x.isEmpty()) {
+            val message = "Generate record proof before local verification"
+            regexRecordVerificationSummary = formatRegexRecordVerificationSummary(
+                recordInput = null,
+                proofGenerated = false,
+                proofVerified = false,
+                accepted = false,
+                proofInputs = emptyList(),
+                provingMs = null,
+                verifyingMs = null,
+                errorMessage = message
+            )
+            operationStatus = OperationStatus("Record proof verification", false, regexRecordVerificationSummary ?: message)
+        } else {
+            isVerifyingRegexRecord = true
+            error = null
+            startProofWorker("regex-record-proof-verify") {
+                try {
+                    val startedAt = System.currentTimeMillis()
+                    val verification = verifyRegexRecordProofWithFallback(regexRecordZkeyPath, regexRecordProofResult)
+                    val elapsedMs = System.currentTimeMillis() - startedAt
+                    regexRecordVerificationSummary = listOf(
+                        regexRecordVerificationSummary ?: "",
+                        compactValue("Verified", verification.verified.toString()),
+                        compactValue("Backend", verification.backend),
+                        verification.detail?.let { compactValue("Detail", it) }.orEmpty(),
+                        compactValue("Verifying", "$elapsedMs ms")
+                    ).filter { it.isNotBlank() }.joinToString("\n")
+                    operationStatus = OperationStatus(
+                        "Record proof verification",
+                        verification.verified,
+                        regexRecordVerificationSummary ?: "Record proof verified"
+                    )
+                } catch (e: Exception) {
+                    val message = e.message ?: e.toString()
+                    regexRecordVerificationSummary = listOf(
+                        regexRecordVerificationSummary ?: "",
+                        compactValue("Verified", "false"),
+                        compactValue("Error", message)
+                    ).filter { it.isNotBlank() }.joinToString("\n")
+                    error = message
+                    operationStatus = OperationStatus(
+                        "Record proof verification",
+                        false,
+                        regexRecordVerificationSummary ?: message
+                    )
+                } finally {
+                    isVerifyingRegexRecord = false
+                }
+            }
+        }
+    }
+
+    val sendRegexRecordProofToServer = {
+        val token = authToken
+        when {
+            token == null -> {
+                val message = "Login before sending record proof"
+                error = message
+                operationStatus = OperationStatus("Send record proof", false, message)
+            }
+
+            regexRecordProofResult.proof.a.x.isEmpty() -> {
+                val message = "Generate record proof before sending it"
+                error = message
+                operationStatus = OperationStatus("Send record proof", false, message)
+            }
+
+            else -> {
+                isSendingRegexRecord = true
+                error = null
+                Thread {
+                    try {
+                        val summary = postRegexRecordProofToServer(
+                            serverUrl,
+                            token,
+                            regexRecordProofResult,
+                            regexRecordZkeyPath
+                        )
+                        regexRecordVerificationSummary = listOf(
+                            regexRecordVerificationSummary ?: "",
+                            summary
+                        ).filter { it.isNotBlank() }.joinToString("\n")
+                        operationStatus = OperationStatus("Send record proof", true, summary)
+                    } catch (e: Exception) {
+                        val message = e.message ?: e.toString()
+                        error = message
+                        operationStatus = OperationStatus("Send record proof", false, message)
+                    } finally {
+                        isSendingRegexRecord = false
+                    }
+                }.start()
+            }
+        }
+    }
+
     if (authToken != null && isRegexSetOpen) {
         RegexSetDialog(
-            ipv4Input = ipv4Input,
+            regexImportText = regexImportText,
+            sourceIpInput = sourceIpInput,
+            destinationIpInput = destinationIpInput,
             timestampInput = timestampInput,
+            portInput = portInput,
+            transInput = transInput,
+            unitInput = unitInput,
+            protocolInput = protocolInput,
             isBusy = isBusy,
-            hasRegexProof = regexProofResult.proof.a.x.isNotEmpty(),
+            sourceIpVerificationSummary = sourceIpVerificationSummary,
+            destinationIpVerificationSummary = destinationIpVerificationSummary,
+            timestampVerificationSummary = timestampVerificationSummary,
+            portVerificationSummary = portVerificationSummary,
+            transVerificationSummary = transVerificationSummary,
+            unitVerificationSummary = unitVerificationSummary,
+            protocolVerificationSummary = protocolVerificationSummary,
+            regexRecordVerificationSummary = regexRecordVerificationSummary,
+            hasSourceIpProof = sourceIpProofResult.proof.a.x.isNotEmpty(),
+            hasDestinationIpProof = destinationIpProofResult.proof.a.x.isNotEmpty(),
             hasTimestampProof = timestampProofResult.proof.a.x.isNotEmpty(),
+            hasPortProof = portProofResult.proof.a.x.isNotEmpty(),
+            hasTransProof = transProofResult.proof.a.x.isNotEmpty(),
+            hasUnitProof = unitProofResult.proof.a.x.isNotEmpty(),
+            hasProtocolProof = protocolProofResult.proof.a.x.isNotEmpty(),
+            hasRegexRecordProof = regexRecordProofResult.proof.a.x.isNotEmpty(),
             onDismiss = { isRegexSetOpen = false },
-            onIpv4InputChange = {
-                ipv4Input = it
-                regexProofResult = emptyProofResult()
-                regexNormalizedInput = null
-                ipv4VerificationSummary = null
+            onRegexImportTextChange = {
+                regexImportText = it
+                clearRegexRecordProof()
             },
-            onGenerateIpv4Proof = {
-                isVerifyingIpv4 = true
+            onParseRegexImportText = { applyRegexImport(regexImportText) },
+            onPickRegexJsonFile = { regexJsonFileLauncher.launch("*/*") },
+            onGenerateAllProofs = {},
+            onVerifyAllProofs = {},
+            onGenerateRecordProof = generateRegexRecordProof,
+            onViewRecordProof = {
+                operationStatus = OperationStatus(
+                    "Record proof",
+                    regexRecordProofResult.proof.a.x.isNotEmpty(),
+                    regexRecordVerificationSummary ?: "No record proof output yet"
+                )
+            },
+            onVerifyRecordProof = verifyRegexRecordProof,
+            onSendRecordProofToServer = sendRegexRecordProofToServer,
+            onSourceIpInputChange = {
+                sourceIpInput = it
+                clearSourceIpProof()
+                clearRegexRecordProof()
+            },
+            onGenerateSourceIpProof = {
+                isVerifyingSourceIp = true
                 error = null
-                startProofWorker("regex-proof-generate") {
+                startProofWorker("source-ip-regex-proof-generate") {
                     try {
-                        val (circuitInput, normalizedIp) = buildIpv4RegexCircuitInput(ipv4Input)
+                        val (circuitInput, normalizedIp) = buildIpv4RegexCircuitInput(sourceIpInput)
                         val startTime = System.currentTimeMillis()
-                        regexProofResult = generateCircomProof(regexIpZkeyPath, circuitInput, ProofLib.ARKWORKS)
+                        sourceIpProofResult = generateCircomProof(regexIpZkeyPath, circuitInput, ProofLib.ARKWORKS)
                         val generatedMs = System.currentTimeMillis() - startTime
-                        regexNormalizedInput = normalizedIp
-                        ipv4VerificationSummary = formatIpv4VerificationSummary(
-                            rawInput = ipv4Input,
+                        sourceIpNormalizedInput = normalizedIp
+                        sourceIpVerificationSummary = formatIpv4VerificationSummary(
+                            rawInput = sourceIpInput,
                             normalizedInput = normalizedIp,
                             proofGenerated = true,
                             proofVerified = null,
                             accepted = null,
-                            proofInputs = regexProofResult.inputs,
+                            proofInputs = sourceIpProofResult.inputs,
                             provingMs = generatedMs,
                             verifyingMs = null,
                             errorMessage = null
                         )
                         operationStatus = OperationStatus(
-                            "IPv4 proof generation",
+                            "Source IP proof generation",
                             true,
-                            ipv4VerificationSummary ?: "No IPv4 verification output"
+                            sourceIpVerificationSummary ?: "No Source IP verification output"
                         )
                     } catch (e: Exception) {
                         val message = e.message ?: e.toString()
-                        regexProofResult = emptyProofResult()
-                        regexNormalizedInput = null
-                        ipv4VerificationSummary = formatIpv4VerificationSummary(
-                            rawInput = ipv4Input,
+                        sourceIpProofResult = emptyProofResult()
+                        sourceIpNormalizedInput = null
+                        sourceIpVerificationSummary = formatIpv4VerificationSummary(
+                            rawInput = sourceIpInput,
                             normalizedInput = null,
                             proofGenerated = false,
                             proofVerified = null,
@@ -728,21 +1090,21 @@ fun LocationProofComponent(modifier: Modifier = Modifier) {
                             errorMessage = message
                         )
                         operationStatus = OperationStatus(
-                            "IPv4 proof generation",
+                            "Source IP proof generation",
                             false,
-                            ipv4VerificationSummary ?: message
+                            sourceIpVerificationSummary ?: message
                         )
                     } finally {
-                        isVerifyingIpv4 = false
+                        isVerifyingSourceIp = false
                     }
                 }
             },
-            onVerifyIpv4Proof = {
-                if (regexProofResult.proof.a.x.isEmpty()) {
-                    val message = "Generate IPv4 proof before local verification"
-                    ipv4VerificationSummary = formatIpv4VerificationSummary(
-                        rawInput = ipv4Input,
-                        normalizedInput = regexNormalizedInput,
+            onVerifySourceIpProof = {
+                if (sourceIpProofResult.proof.a.x.isEmpty()) {
+                    val message = "Generate Source IP proof before local verification"
+                    sourceIpVerificationSummary = formatIpv4VerificationSummary(
+                        rawInput = sourceIpInput,
+                        normalizedInput = sourceIpNormalizedInput,
                         proofGenerated = false,
                         proofVerified = false,
                         accepted = false,
@@ -751,61 +1113,184 @@ fun LocationProofComponent(modifier: Modifier = Modifier) {
                         verifyingMs = null,
                         errorMessage = message
                     )
-                    operationStatus = OperationStatus("IPv4 proof verification", false, ipv4VerificationSummary ?: message)
+                    operationStatus = OperationStatus("Source IP proof verification", false, sourceIpVerificationSummary ?: message)
                 } else {
-                    isVerifyingIpv4 = true
+                    isVerifyingSourceIp = true
                     error = null
-                    startProofWorker("regex-proof-verify") {
+                    startProofWorker("source-ip-regex-proof-verify") {
                         try {
                             val verifyStart = System.currentTimeMillis()
-                            val verified = verifyCircomProof(regexIpZkeyPath, regexProofResult, ProofLib.ARKWORKS)
+                            val verified = verifyCircomProof(regexIpZkeyPath, sourceIpProofResult, ProofLib.ARKWORKS)
                             val verifiedMs = System.currentTimeMillis() - verifyStart
-                            val accepted = verified && regexProofResult.inputs.firstOrNull() == "1"
-                            ipv4VerificationSummary = formatIpv4VerificationSummary(
-                                rawInput = ipv4Input,
-                                normalizedInput = regexNormalizedInput,
+                            val accepted = verified && sourceIpProofResult.inputs.firstOrNull() == "1"
+                            sourceIpVerificationSummary = formatIpv4VerificationSummary(
+                                rawInput = sourceIpInput,
+                                normalizedInput = sourceIpNormalizedInput,
                                 proofGenerated = true,
                                 proofVerified = verified,
                                 accepted = accepted,
-                                proofInputs = regexProofResult.inputs,
+                                proofInputs = sourceIpProofResult.inputs,
                                 provingMs = null,
                                 verifyingMs = verifiedMs,
                                 errorMessage = null
                             )
                             operationStatus = OperationStatus(
-                                "IPv4 proof verification",
+                                "Source IP proof verification",
                                 accepted,
-                                ipv4VerificationSummary ?: "No IPv4 verification output"
+                                sourceIpVerificationSummary ?: "No Source IP verification output"
                             )
                         } catch (e: Exception) {
                             val message = e.message ?: e.toString()
-                            ipv4VerificationSummary = formatIpv4VerificationSummary(
-                                rawInput = ipv4Input,
-                                normalizedInput = regexNormalizedInput,
+                            sourceIpVerificationSummary = formatIpv4VerificationSummary(
+                                rawInput = sourceIpInput,
+                                normalizedInput = sourceIpNormalizedInput,
                                 proofGenerated = true,
                                 proofVerified = false,
                                 accepted = false,
-                                proofInputs = regexProofResult.inputs,
+                                proofInputs = sourceIpProofResult.inputs,
                                 provingMs = null,
                                 verifyingMs = null,
                                 errorMessage = message
                             )
                             operationStatus = OperationStatus(
-                                "IPv4 proof verification",
+                                "Source IP proof verification",
                                 false,
-                                ipv4VerificationSummary ?: message
+                                sourceIpVerificationSummary ?: message
                             )
                         } finally {
-                            isVerifyingIpv4 = false
+                            isVerifyingSourceIp = false
+                        }
+                    }
+                }
+            },
+            onDestinationIpInputChange = {
+                destinationIpInput = it
+                clearDestinationIpProof()
+                clearRegexRecordProof()
+            },
+            onGenerateDestinationIpProof = {
+                isVerifyingDestinationIp = true
+                error = null
+                startProofWorker("destination-ip-regex-proof-generate") {
+                    try {
+                        val (circuitInput, normalizedIp) = buildIpv4RegexCircuitInput(destinationIpInput)
+                        val startTime = System.currentTimeMillis()
+                        destinationIpProofResult = generateCircomProof(regexIpZkeyPath, circuitInput, ProofLib.ARKWORKS)
+                        val generatedMs = System.currentTimeMillis() - startTime
+                        destinationIpNormalizedInput = normalizedIp
+                        destinationIpVerificationSummary = formatIpv4VerificationSummary(
+                            rawInput = destinationIpInput,
+                            normalizedInput = normalizedIp,
+                            proofGenerated = true,
+                            proofVerified = null,
+                            accepted = null,
+                            proofInputs = destinationIpProofResult.inputs,
+                            provingMs = generatedMs,
+                            verifyingMs = null,
+                            errorMessage = null
+                        )
+                        operationStatus = OperationStatus(
+                            "Destination IP proof generation",
+                            true,
+                            destinationIpVerificationSummary ?: "No Destination IP verification output"
+                        )
+                    } catch (e: Exception) {
+                        val message = e.message ?: e.toString()
+                        destinationIpProofResult = emptyProofResult()
+                        destinationIpNormalizedInput = null
+                        destinationIpVerificationSummary = formatIpv4VerificationSummary(
+                            rawInput = destinationIpInput,
+                            normalizedInput = null,
+                            proofGenerated = false,
+                            proofVerified = null,
+                            accepted = false,
+                            proofInputs = emptyList(),
+                            provingMs = null,
+                            verifyingMs = null,
+                            errorMessage = message
+                        )
+                        operationStatus = OperationStatus(
+                            "Destination IP proof generation",
+                            false,
+                            destinationIpVerificationSummary ?: message
+                        )
+                    } finally {
+                        isVerifyingDestinationIp = false
+                    }
+                }
+            },
+            onVerifyDestinationIpProof = {
+                if (destinationIpProofResult.proof.a.x.isEmpty()) {
+                    val message = "Generate Destination IP proof before local verification"
+                    destinationIpVerificationSummary = formatIpv4VerificationSummary(
+                        rawInput = destinationIpInput,
+                        normalizedInput = destinationIpNormalizedInput,
+                        proofGenerated = false,
+                        proofVerified = false,
+                        accepted = false,
+                        proofInputs = emptyList(),
+                        provingMs = null,
+                        verifyingMs = null,
+                        errorMessage = message
+                    )
+                    operationStatus = OperationStatus(
+                        "Destination IP proof verification",
+                        false,
+                        destinationIpVerificationSummary ?: message
+                    )
+                } else {
+                    isVerifyingDestinationIp = true
+                    error = null
+                    startProofWorker("destination-ip-regex-proof-verify") {
+                        try {
+                            val verifyStart = System.currentTimeMillis()
+                            val verified = verifyCircomProof(regexIpZkeyPath, destinationIpProofResult, ProofLib.ARKWORKS)
+                            val verifiedMs = System.currentTimeMillis() - verifyStart
+                            val accepted = verified && destinationIpProofResult.inputs.firstOrNull() == "1"
+                            destinationIpVerificationSummary = formatIpv4VerificationSummary(
+                                rawInput = destinationIpInput,
+                                normalizedInput = destinationIpNormalizedInput,
+                                proofGenerated = true,
+                                proofVerified = verified,
+                                accepted = accepted,
+                                proofInputs = destinationIpProofResult.inputs,
+                                provingMs = null,
+                                verifyingMs = verifiedMs,
+                                errorMessage = null
+                            )
+                            operationStatus = OperationStatus(
+                                "Destination IP proof verification",
+                                accepted,
+                                destinationIpVerificationSummary ?: "No Destination IP verification output"
+                            )
+                        } catch (e: Exception) {
+                            val message = e.message ?: e.toString()
+                            destinationIpVerificationSummary = formatIpv4VerificationSummary(
+                                rawInput = destinationIpInput,
+                                normalizedInput = destinationIpNormalizedInput,
+                                proofGenerated = true,
+                                proofVerified = false,
+                                accepted = false,
+                                proofInputs = destinationIpProofResult.inputs,
+                                provingMs = null,
+                                verifyingMs = null,
+                                errorMessage = message
+                            )
+                            operationStatus = OperationStatus(
+                                "Destination IP proof verification",
+                                false,
+                                destinationIpVerificationSummary ?: message
+                            )
+                        } finally {
+                            isVerifyingDestinationIp = false
                         }
                     }
                 }
             },
             onTimestampInputChange = {
                 timestampInput = it
-                timestampProofResult = emptyProofResult()
-                timestampNormalizedInput = null
-                timestampVerificationSummary = null
+                clearTimestampProof()
+                clearRegexRecordProof()
             },
             onGenerateTimestampProof = {
                 isVerifyingTimestamp = true
@@ -933,6 +1418,562 @@ fun LocationProofComponent(modifier: Modifier = Modifier) {
                         }
                     }
                 }
+            },
+            onPortInputChange = {
+                portInput = it
+                portProofResult = emptyProofResult()
+                portNormalizedInput = null
+                portVerificationSummary = null
+                clearRegexRecordProof()
+            },
+            onGeneratePortProof = {
+                isVerifyingPort = true
+                error = null
+                startProofWorker("port-regex-proof-generate") {
+                    try {
+                        val (circuitInput, normalizedPort) = buildPortRegexCircuitInput(portInput)
+                        val startTime = System.currentTimeMillis()
+                        portProofResult = generateCircomProof(
+                            portTransZkeyPath,
+                            circuitInput,
+                            ProofLib.ARKWORKS
+                        )
+                        val generatedMs = System.currentTimeMillis() - startTime
+                        portNormalizedInput = normalizedPort
+                        portVerificationSummary = formatPortVerificationSummary(
+                            rawInput = portInput,
+                            normalizedInput = normalizedPort,
+                            proofGenerated = true,
+                            proofVerified = null,
+                            accepted = null,
+                            proofInputs = portProofResult.inputs,
+                            provingMs = generatedMs,
+                            verifyingMs = null,
+                            errorMessage = null
+                        )
+                        operationStatus = OperationStatus(
+                            "Port proof generation",
+                            true,
+                            portVerificationSummary ?: "No port verification output"
+                        )
+                    } catch (e: Exception) {
+                        val message = e.message ?: e.toString()
+                        portProofResult = emptyProofResult()
+                        portNormalizedInput = null
+                        portVerificationSummary = formatPortVerificationSummary(
+                            rawInput = portInput,
+                            normalizedInput = null,
+                            proofGenerated = false,
+                            proofVerified = null,
+                            accepted = false,
+                            proofInputs = emptyList(),
+                            provingMs = null,
+                            verifyingMs = null,
+                            errorMessage = message
+                        )
+                        operationStatus = OperationStatus(
+                            "Port proof generation",
+                            false,
+                            portVerificationSummary ?: message
+                        )
+                    } finally {
+                        isVerifyingPort = false
+                    }
+                }
+            },
+            onVerifyPortProof = {
+                if (portProofResult.proof.a.x.isEmpty()) {
+                    val message = "Generate port proof before local verification"
+                    portVerificationSummary = formatPortVerificationSummary(
+                        rawInput = portInput,
+                        normalizedInput = portNormalizedInput,
+                        proofGenerated = false,
+                        proofVerified = false,
+                        accepted = false,
+                        proofInputs = emptyList(),
+                        provingMs = null,
+                        verifyingMs = null,
+                        errorMessage = message
+                    )
+                    operationStatus = OperationStatus(
+                        "Port proof verification",
+                        false,
+                        portVerificationSummary ?: message
+                    )
+                } else {
+                    isVerifyingPort = true
+                    error = null
+                    startProofWorker("port-regex-proof-verify") {
+                        try {
+                            val verifyStart = System.currentTimeMillis()
+                            val verified = verifyCircomProof(
+                                portTransZkeyPath,
+                                portProofResult,
+                                ProofLib.ARKWORKS
+                            )
+                            val verifiedMs = System.currentTimeMillis() - verifyStart
+                            val accepted = verified && portProofResult.inputs.firstOrNull() == "1"
+                            portVerificationSummary = formatPortVerificationSummary(
+                                rawInput = portInput,
+                                normalizedInput = portNormalizedInput,
+                                proofGenerated = true,
+                                proofVerified = verified,
+                                accepted = accepted,
+                                proofInputs = portProofResult.inputs,
+                                provingMs = null,
+                                verifyingMs = verifiedMs,
+                                errorMessage = null
+                            )
+                            operationStatus = OperationStatus(
+                                "Port proof verification",
+                                accepted,
+                                portVerificationSummary ?: "No port verification output"
+                            )
+                        } catch (e: Exception) {
+                            val message = e.message ?: e.toString()
+                            portVerificationSummary = formatPortVerificationSummary(
+                                rawInput = portInput,
+                                normalizedInput = portNormalizedInput,
+                                proofGenerated = true,
+                                proofVerified = false,
+                                accepted = false,
+                                proofInputs = portProofResult.inputs,
+                                provingMs = null,
+                                verifyingMs = null,
+                                errorMessage = message
+                            )
+                            operationStatus = OperationStatus(
+                                "Port proof verification",
+                                false,
+                                portVerificationSummary ?: message
+                            )
+                        } finally {
+                            isVerifyingPort = false
+                        }
+                    }
+                }
+            },
+            onTransInputChange = {
+                transInput = it
+                transProofResult = emptyProofResult()
+                transNormalizedInput = null
+                transVerificationSummary = null
+                clearRegexRecordProof()
+            },
+            onGenerateTransProof = {
+                isVerifyingTrans = true
+                error = null
+                startProofWorker("trans-regex-proof-generate") {
+                    try {
+                        val (circuitInput, normalizedTrans) = buildPortRegexCircuitInput(transInput, "Trans")
+                        val startTime = System.currentTimeMillis()
+                        transProofResult = generateCircomProof(
+                            portTransZkeyPath,
+                            circuitInput,
+                            ProofLib.ARKWORKS
+                        )
+                        val generatedMs = System.currentTimeMillis() - startTime
+                        transNormalizedInput = normalizedTrans
+                        transVerificationSummary = formatUint16VerificationSummary(
+                            label = "Trans",
+                            rawInput = transInput,
+                            normalizedInput = normalizedTrans,
+                            proofGenerated = true,
+                            proofVerified = null,
+                            accepted = null,
+                            proofInputs = transProofResult.inputs,
+                            provingMs = generatedMs,
+                            verifyingMs = null,
+                            errorMessage = null
+                        )
+                        operationStatus = OperationStatus(
+                            "Trans proof generation",
+                            true,
+                            transVerificationSummary ?: "No Trans verification output"
+                        )
+                    } catch (e: Exception) {
+                        val message = e.message ?: e.toString()
+                        transProofResult = emptyProofResult()
+                        transNormalizedInput = null
+                        transVerificationSummary = formatUint16VerificationSummary(
+                            label = "Trans",
+                            rawInput = transInput,
+                            normalizedInput = null,
+                            proofGenerated = false,
+                            proofVerified = null,
+                            accepted = false,
+                            proofInputs = emptyList(),
+                            provingMs = null,
+                            verifyingMs = null,
+                            errorMessage = message
+                        )
+                        operationStatus = OperationStatus(
+                            "Trans proof generation",
+                            false,
+                            transVerificationSummary ?: message
+                        )
+                    } finally {
+                        isVerifyingTrans = false
+                    }
+                }
+            },
+            onVerifyTransProof = {
+                if (transProofResult.proof.a.x.isEmpty()) {
+                    val message = "Generate Trans proof before local verification"
+                    transVerificationSummary = formatUint16VerificationSummary(
+                        label = "Trans",
+                        rawInput = transInput,
+                        normalizedInput = transNormalizedInput,
+                        proofGenerated = false,
+                        proofVerified = false,
+                        accepted = false,
+                        proofInputs = emptyList(),
+                        provingMs = null,
+                        verifyingMs = null,
+                        errorMessage = message
+                    )
+                    operationStatus = OperationStatus(
+                        "Trans proof verification",
+                        false,
+                        transVerificationSummary ?: message
+                    )
+                } else {
+                    isVerifyingTrans = true
+                    error = null
+                    startProofWorker("trans-regex-proof-verify") {
+                        try {
+                            val verifyStart = System.currentTimeMillis()
+                            val verified = verifyCircomProof(
+                                portTransZkeyPath,
+                                transProofResult,
+                                ProofLib.ARKWORKS
+                            )
+                            val verifiedMs = System.currentTimeMillis() - verifyStart
+                            val accepted = verified && transProofResult.inputs.firstOrNull() == "1"
+                            transVerificationSummary = formatUint16VerificationSummary(
+                                label = "Trans",
+                                rawInput = transInput,
+                                normalizedInput = transNormalizedInput,
+                                proofGenerated = true,
+                                proofVerified = verified,
+                                accepted = accepted,
+                                proofInputs = transProofResult.inputs,
+                                provingMs = null,
+                                verifyingMs = verifiedMs,
+                                errorMessage = null
+                            )
+                            operationStatus = OperationStatus(
+                                "Trans proof verification",
+                                accepted,
+                                transVerificationSummary ?: "No Trans verification output"
+                            )
+                        } catch (e: Exception) {
+                            val message = e.message ?: e.toString()
+                            transVerificationSummary = formatUint16VerificationSummary(
+                                label = "Trans",
+                                rawInput = transInput,
+                                normalizedInput = transNormalizedInput,
+                                proofGenerated = true,
+                                proofVerified = false,
+                                accepted = false,
+                                proofInputs = transProofResult.inputs,
+                                provingMs = null,
+                                verifyingMs = null,
+                                errorMessage = message
+                            )
+                            operationStatus = OperationStatus(
+                                "Trans proof verification",
+                                false,
+                                transVerificationSummary ?: message
+                            )
+                        } finally {
+                            isVerifyingTrans = false
+                        }
+                    }
+                }
+            },
+            onUnitInputChange = {
+                unitInput = it
+                unitProofResult = emptyProofResult()
+                unitNormalizedInput = null
+                unitVerificationSummary = null
+                clearRegexRecordProof()
+            },
+            onGenerateUnitProof = {
+                isVerifyingUnit = true
+                error = null
+                startProofWorker("unit-regex-proof-generate") {
+                    try {
+                        val (circuitInput, normalizedUnit) = buildUintDecimalCircuitInput(
+                            rawInput = unitInput,
+                            fieldLabel = "Unit",
+                            digits = 3,
+                            maxValue = 255
+                        )
+                        val startTime = System.currentTimeMillis()
+                        unitProofResult = generateCircomProof(
+                            unitZkeyPath,
+                            circuitInput,
+                            ProofLib.ARKWORKS
+                        )
+                        val generatedMs = System.currentTimeMillis() - startTime
+                        unitNormalizedInput = normalizedUnit
+                        unitVerificationSummary = formatUintFieldVerificationSummary(
+                            label = "Unit",
+                            rawInput = unitInput,
+                            normalizedInput = normalizedUnit,
+                            maxValue = 255,
+                            proofGenerated = true,
+                            proofVerified = null,
+                            accepted = null,
+                            proofInputs = unitProofResult.inputs,
+                            provingMs = generatedMs,
+                            verifyingMs = null,
+                            errorMessage = null
+                        )
+                        operationStatus = OperationStatus(
+                            "Unit proof generation",
+                            true,
+                            unitVerificationSummary ?: "No Unit verification output"
+                        )
+                    } catch (e: Exception) {
+                        val message = e.message ?: e.toString()
+                        unitProofResult = emptyProofResult()
+                        unitNormalizedInput = null
+                        unitVerificationSummary = formatUintFieldVerificationSummary(
+                            label = "Unit",
+                            rawInput = unitInput,
+                            normalizedInput = null,
+                            maxValue = 255,
+                            proofGenerated = false,
+                            proofVerified = null,
+                            accepted = false,
+                            proofInputs = emptyList(),
+                            provingMs = null,
+                            verifyingMs = null,
+                            errorMessage = message
+                        )
+                        operationStatus = OperationStatus(
+                            "Unit proof generation",
+                            false,
+                            unitVerificationSummary ?: message
+                        )
+                    } finally {
+                        isVerifyingUnit = false
+                    }
+                }
+            },
+            onVerifyUnitProof = {
+                if (unitProofResult.proof.a.x.isEmpty()) {
+                    val message = "Generate Unit proof before local verification"
+                    unitVerificationSummary = formatUintFieldVerificationSummary(
+                        label = "Unit",
+                        rawInput = unitInput,
+                        normalizedInput = unitNormalizedInput,
+                        maxValue = 255,
+                        proofGenerated = false,
+                        proofVerified = false,
+                        accepted = false,
+                        proofInputs = emptyList(),
+                        provingMs = null,
+                        verifyingMs = null,
+                        errorMessage = message
+                    )
+                    operationStatus = OperationStatus(
+                        "Unit proof verification",
+                        false,
+                        unitVerificationSummary ?: message
+                    )
+                } else {
+                    isVerifyingUnit = true
+                    error = null
+                    startProofWorker("unit-regex-proof-verify") {
+                        try {
+                            val verifyStart = System.currentTimeMillis()
+                            val verified = verifyCircomProof(
+                                unitZkeyPath,
+                                unitProofResult,
+                                ProofLib.ARKWORKS
+                            )
+                            val verifiedMs = System.currentTimeMillis() - verifyStart
+                            val accepted = verified && unitProofResult.inputs.firstOrNull() == "1"
+                            unitVerificationSummary = formatUintFieldVerificationSummary(
+                                label = "Unit",
+                                rawInput = unitInput,
+                                normalizedInput = unitNormalizedInput,
+                                maxValue = 255,
+                                proofGenerated = true,
+                                proofVerified = verified,
+                                accepted = accepted,
+                                proofInputs = unitProofResult.inputs,
+                                provingMs = null,
+                                verifyingMs = verifiedMs,
+                                errorMessage = null
+                            )
+                            operationStatus = OperationStatus(
+                                "Unit proof verification",
+                                accepted,
+                                unitVerificationSummary ?: "No Unit verification output"
+                            )
+                        } catch (e: Exception) {
+                            val message = e.message ?: e.toString()
+                            unitVerificationSummary = formatUintFieldVerificationSummary(
+                                label = "Unit",
+                                rawInput = unitInput,
+                                normalizedInput = unitNormalizedInput,
+                                maxValue = 255,
+                                proofGenerated = true,
+                                proofVerified = false,
+                                accepted = false,
+                                proofInputs = unitProofResult.inputs,
+                                provingMs = null,
+                                verifyingMs = null,
+                                errorMessage = message
+                            )
+                            operationStatus = OperationStatus(
+                                "Unit proof verification",
+                                false,
+                                unitVerificationSummary ?: message
+                            )
+                        } finally {
+                            isVerifyingUnit = false
+                        }
+                    }
+                }
+            },
+            onProtocolInputChange = {
+                protocolInput = it
+                protocolProofResult = emptyProofResult()
+                protocolNormalizedInput = null
+                protocolVerificationSummary = null
+                clearRegexRecordProof()
+            },
+            onGenerateProtocolProof = {
+                isVerifyingProtocol = true
+                error = null
+                startProofWorker("protocol-regex-proof-generate") {
+                    try {
+                        val (circuitInput, normalizedProtocol) = buildProtocolRegexCircuitInput(protocolInput)
+                        val startTime = System.currentTimeMillis()
+                        protocolProofResult = generateCircomProof(
+                            protocolRegexZkeyPath,
+                            circuitInput,
+                            ProofLib.ARKWORKS
+                        )
+                        val generatedMs = System.currentTimeMillis() - startTime
+                        protocolNormalizedInput = normalizedProtocol
+                        protocolVerificationSummary = formatProtocolVerificationSummary(
+                            rawInput = protocolInput,
+                            normalizedInput = normalizedProtocol,
+                            proofGenerated = true,
+                            proofVerified = null,
+                            accepted = null,
+                            proofInputs = protocolProofResult.inputs,
+                            provingMs = generatedMs,
+                            verifyingMs = null,
+                            errorMessage = null
+                        )
+                        operationStatus = OperationStatus(
+                            "Protocol proof generation",
+                            true,
+                            protocolVerificationSummary ?: "No protocol verification output"
+                        )
+                    } catch (e: Exception) {
+                        val message = e.message ?: e.toString()
+                        protocolProofResult = emptyProofResult()
+                        protocolNormalizedInput = null
+                        protocolVerificationSummary = formatProtocolVerificationSummary(
+                            rawInput = protocolInput,
+                            normalizedInput = null,
+                            proofGenerated = false,
+                            proofVerified = null,
+                            accepted = false,
+                            proofInputs = emptyList(),
+                            provingMs = null,
+                            verifyingMs = null,
+                            errorMessage = message
+                        )
+                        operationStatus = OperationStatus(
+                            "Protocol proof generation",
+                            false,
+                            protocolVerificationSummary ?: message
+                        )
+                    } finally {
+                        isVerifyingProtocol = false
+                    }
+                }
+            },
+            onVerifyProtocolProof = {
+                if (protocolProofResult.proof.a.x.isEmpty()) {
+                    val message = "Generate protocol proof before local verification"
+                    protocolVerificationSummary = formatProtocolVerificationSummary(
+                        rawInput = protocolInput,
+                        normalizedInput = protocolNormalizedInput,
+                        proofGenerated = false,
+                        proofVerified = false,
+                        accepted = false,
+                        proofInputs = emptyList(),
+                        provingMs = null,
+                        verifyingMs = null,
+                        errorMessage = message
+                    )
+                    operationStatus = OperationStatus(
+                        "Protocol proof verification",
+                        false,
+                        protocolVerificationSummary ?: message
+                    )
+                } else {
+                    isVerifyingProtocol = true
+                    error = null
+                    startProofWorker("protocol-regex-proof-verify") {
+                        try {
+                            val verifyStart = System.currentTimeMillis()
+                            val verified = verifyCircomProof(
+                                protocolRegexZkeyPath,
+                                protocolProofResult,
+                                ProofLib.ARKWORKS
+                            )
+                            val verifiedMs = System.currentTimeMillis() - verifyStart
+                            val accepted = verified && protocolProofResult.inputs.firstOrNull() == "1"
+                            protocolVerificationSummary = formatProtocolVerificationSummary(
+                                rawInput = protocolInput,
+                                normalizedInput = protocolNormalizedInput,
+                                proofGenerated = true,
+                                proofVerified = verified,
+                                accepted = accepted,
+                                proofInputs = protocolProofResult.inputs,
+                                provingMs = null,
+                                verifyingMs = verifiedMs,
+                                errorMessage = null
+                            )
+                            operationStatus = OperationStatus(
+                                "Protocol proof verification",
+                                accepted,
+                                protocolVerificationSummary ?: "No protocol verification output"
+                            )
+                        } catch (e: Exception) {
+                            val message = e.message ?: e.toString()
+                            protocolVerificationSummary = formatProtocolVerificationSummary(
+                                rawInput = protocolInput,
+                                normalizedInput = protocolNormalizedInput,
+                                proofGenerated = true,
+                                proofVerified = false,
+                                accepted = false,
+                                proofInputs = protocolProofResult.inputs,
+                                provingMs = null,
+                                verifyingMs = null,
+                                errorMessage = message
+                            )
+                            operationStatus = OperationStatus(
+                                "Protocol proof verification",
+                                false,
+                                protocolVerificationSummary ?: message
+                            )
+                        } finally {
+                            isVerifyingProtocol = false
+                        }
+                    }
+                }
             }
         )
     }
@@ -946,11 +1987,14 @@ fun LocationProofComponent(modifier: Modifier = Modifier) {
             keyRegistration = keyRegistration,
             provingTime = provingTime,
             publicInputs = publicInputs,
-            serverResponse = serverResponse,
-            reportSummary = reportSummary,
-            performanceSummary = performanceSummary,
-            ipv4VerificationSummary = ipv4VerificationSummary,
+            sourceIpVerificationSummary = sourceIpVerificationSummary,
+            destinationIpVerificationSummary = destinationIpVerificationSummary,
             timestampVerificationSummary = timestampVerificationSummary,
+            portVerificationSummary = portVerificationSummary,
+            transVerificationSummary = transVerificationSummary,
+            unitVerificationSummary = unitVerificationSummary,
+            protocolVerificationSummary = protocolVerificationSummary,
+            regexRecordVerificationSummary = regexRecordVerificationSummary,
             verifyingTime = verifyingTime,
             valid = valid,
             signatureResult = signatureResult,
@@ -970,11 +2014,14 @@ fun LocationProofComponent(modifier: Modifier = Modifier) {
             keyRegistration = keyRegistration,
             provingTime = provingTime,
             publicInputs = publicInputs,
-            serverResponse = serverResponse,
-            reportSummary = reportSummary,
-            performanceSummary = performanceSummary,
-            ipv4VerificationSummary = ipv4VerificationSummary,
+            sourceIpVerificationSummary = sourceIpVerificationSummary,
+            destinationIpVerificationSummary = destinationIpVerificationSummary,
             timestampVerificationSummary = timestampVerificationSummary,
+            portVerificationSummary = portVerificationSummary,
+            transVerificationSummary = transVerificationSummary,
+            unitVerificationSummary = unitVerificationSummary,
+            protocolVerificationSummary = protocolVerificationSummary,
+            regexRecordVerificationSummary = regexRecordVerificationSummary,
             verifyingTime = verifyingTime,
             valid = valid,
             signatureResult = signatureResult,
@@ -992,14 +2039,14 @@ fun LocationProofComponent(modifier: Modifier = Modifier) {
 }
 
 @Composable
-/** 顶部栏，展示当前用户、服务端 host 和全局忙碌状态。 */
+/** 顶部栏，展示当前用户、服务端 host 和退出入口。 */
 private fun AppHeader(
     // username：当前登录用户名。
     username: String,
     // serverUrl：用户输入的服务端 verify URL。
     serverUrl: String,
-    // isBusy：是否存在正在执行的异步操作。
-    isBusy: Boolean
+    // onLogout：退出当前服务端 session。
+    onLogout: () -> Unit
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -1026,107 +2073,14 @@ private fun AppHeader(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            StatusBadge(
-                text = if (isBusy) "Working" else "Ready",
-                active = !isBusy
+            CompactActionButton(
+                "Logout",
+                enabled = true,
+                outlined = true,
+                modifier = Modifier.widthIn(min = 92.dp),
+                onClick = onLogout
             )
         }
-    }
-}
-
-@Composable
-/** Proof pipeline 状态条，按 key -> GNSS -> proof -> sign -> server 展示进度。 */
-private fun StatusStrip(
-    // hasKey：服务端是否已有本次登录后的 active key。
-    hasKey: Boolean,
-    // hasLocation：是否已经获取 GNSS 坐标。
-    hasLocation: Boolean,
-    // hasProof：是否已生成本地 proof。
-    hasProof: Boolean,
-    // hasSignature：是否已用 Keystore 对 commitment 签名。
-    hasSignature: Boolean,
-    // serverAccepted：服务端是否返回最终 valid=true。
-    serverAccepted: Boolean
-) {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(8.dp),
-        color = MaterialTheme.colorScheme.surface,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
-    ) {
-        Column(
-            modifier = Modifier.padding(10.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Text(
-                text = "Proof pipeline",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                StatusPill("Key", hasKey, Modifier.weight(1f))
-                StatusPill("GNSS", hasLocation, Modifier.weight(1f))
-                StatusPill("Proof", hasProof, Modifier.weight(1f))
-                StatusPill("Sign", hasSignature, Modifier.weight(1f))
-                StatusPill("Server", serverAccepted, Modifier.weight(1f))
-            }
-        }
-    }
-}
-
-@Composable
-/** 单个 pipeline 状态胶囊。 */
-private fun StatusPill(
-    // label：状态名称，例如 Key/GNSS/Proof。
-    label: String,
-    // active：该阶段是否已经完成。
-    active: Boolean,
-    // modifier：外部布局传入的尺寸约束。
-    modifier: Modifier = Modifier
-) {
-    Surface(
-        modifier = modifier.heightIn(min = 30.dp),
-        shape = RoundedCornerShape(8.dp),
-        color = if (active) Color(0xFFE7F6F2) else MaterialTheme.colorScheme.surfaceVariant,
-        border = BorderStroke(
-            1.dp,
-            if (active) Color(0xFF99D6C9) else MaterialTheme.colorScheme.outline
-        )
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 4.dp, vertical = 6.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                text = label,
-                fontSize = 11.sp,
-                fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
-                color = if (active) Color(0xFF0F766E) else MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-    }
-}
-
-@Composable
-/** 顶部 Ready/Working 状态标签。 */
-private fun StatusBadge(text: String, active: Boolean) {
-    Surface(
-        shape = RoundedCornerShape(8.dp),
-        color = if (active) Color(0xFFE7F6F2) else Color(0xFFFFF4E5),
-        border = BorderStroke(1.dp, if (active) Color(0xFF99D6C9) else Color(0xFFF3C98B))
-    ) {
-        Text(
-            text = text,
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-            fontSize = 12.sp,
-            fontWeight = FontWeight.SemiBold,
-            color = if (active) Color(0xFF0F766E) else Color(0xFF92400E)
-        )
     }
 }
 
@@ -1260,7 +2214,7 @@ private fun AuthEntry(
 }
 
 @Composable
-/** Location 弹窗，集中放置账号、key、GNSS、location proof、签名和实验导出操作。 */
+/** Location 弹窗，集中放置账号、key、GNSS、resolution 和实验导出操作。 */
 private fun ActionSetDialog(
     // serverUrl：当前服务端地址。
     serverUrl: String,
@@ -1270,28 +2224,30 @@ private fun ActionSetDialog(
     resolutionMenuExpanded: Boolean,
     // isBusy：是否禁用所有动作按钮。
     isBusy: Boolean,
-    // hasLocation/hasProof/hasCommitment/isLoggedIn：按钮启用条件。
-    hasLocation: Boolean,
-    hasProof: Boolean,
-    hasCommitment: Boolean,
+    // isLoggedIn：按钮启用条件。
     isLoggedIn: Boolean,
+    // hasKey：是否已在本次登录后生成并绑定 Keystore key。
+    hasKey: Boolean,
+    // hasLocation：是否已有 GNSS 坐标，可用于生成位置 proof。
+    hasLocation: Boolean,
+    // hasProof：是否已有可本地验证的位置 proof。
+    hasProof: Boolean,
+    // hasSignature：是否已有当前 proof commitment 的 Keystore 签名。
+    hasSignature: Boolean,
     // onDismiss：关闭弹窗。
     onDismiss: () -> Unit,
     // onServerUrlChange：更新服务端地址。
     onServerUrlChange: (String) -> Unit,
-    // onLogout...onSendProofToServer：各业务动作回调，由父组件持有真实状态。
-    onLogout: () -> Unit,
+    // onVerifyKey...onSelectResolution：各业务动作回调，由父组件持有真实状态。
     onVerifyKey: () -> Unit,
-    onFetchStats: () -> Unit,
-    onExportReport: () -> Unit,
     onBindKey: () -> Unit,
     onGetGnss: () -> Unit,
-    onResolutionMenuChange: (Boolean) -> Unit,
-    onSelectResolution: (Int) -> Unit,
     onGenerateProof: () -> Unit,
     onVerifyProof: () -> Unit,
     onSignCommitment: () -> Unit,
-    onSendProofToServer: () -> Unit
+    onSendProof: () -> Unit,
+    onResolutionMenuChange: (Boolean) -> Unit,
+    onSelectResolution: (Int) -> Unit
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1330,11 +2286,10 @@ private fun ActionSetDialog(
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                CompactActionButton("Logout", enabled = !isBusy && isLoggedIn, outlined = true, onClick = onLogout)
                 CompactActionButton("Verify key", enabled = !isBusy && isLoggedIn, outlined = true, onClick = onVerifyKey)
                 CompactActionButton("Generate new key and bind", enabled = !isBusy && isLoggedIn, onClick = onBindKey)
                 Text(
-                    "Proof workflow",
+                    "Location",
                     modifier = Modifier.fillMaxWidth(),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1360,17 +2315,9 @@ private fun ActionSetDialog(
                     }
                 }
                 CompactActionButton("Generate proof", enabled = !isBusy && hasLocation, onClick = onGenerateProof)
-                CompactActionButton("Verify proof", enabled = !isBusy && hasProof, onClick = onVerifyProof)
-                CompactActionButton("Sign commitment", enabled = !isBusy && hasCommitment && isLoggedIn, onClick = onSignCommitment)
-                CompactActionButton("Send proof to server", enabled = !isBusy && hasProof, onClick = onSendProofToServer)
-                Text(
-                    "Experiment",
-                    modifier = Modifier.fillMaxWidth(),
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                CompactActionButton("Server stats", enabled = !isBusy, outlined = true, onClick = onFetchStats)
-                CompactActionButton("Export report", enabled = !isBusy, outlined = true, onClick = onExportReport)
+                CompactActionButton("Verify proof", enabled = !isBusy && hasProof, outlined = true, onClick = onVerifyProof)
+                CompactActionButton("Sign commitment", enabled = !isBusy && isLoggedIn && hasKey && hasProof, outlined = true, onClick = onSignCommitment)
+                CompactActionButton("Send proof to server", enabled = !isBusy && isLoggedIn && hasKey && hasProof && hasSignature, onClick = onSendProof)
             }
         },
         confirmButton = {
@@ -1379,30 +2326,93 @@ private fun ActionSetDialog(
     )
 }
 
+@Suppress("UNUSED_PARAMETER")
 @Composable
-/** Regex 弹窗，集中放置 IPv4 和时间戳正则 proof 的本地生成和本地验证。 */
+/** Regex 弹窗，集中放置 IPv4、时间戳、Port/Trans/Unit 数字字段和协议 proof 的本地生成和本地验证。 */
 private fun RegexSetDialog(
-    // ipv4Input：IPv4 正则 proof 的原始用户输入。
-    ipv4Input: String,
+    // regexImportText：JSON 导入文本。
+    regexImportText: String,
+    // sourceIpInput：Source IP 正则 proof 的原始用户输入。
+    sourceIpInput: String,
+    // destinationIpInput：Destination IP 正则 proof 的原始用户输入。
+    destinationIpInput: String,
     // timestampInput：时间戳正则 proof 的原始用户输入。
     timestampInput: String,
+    // portInput：端口正则 proof 的原始用户输入。
+    portInput: String,
+    // transInput：事务 ID proof 的原始用户输入。
+    transInput: String,
+    // unitInput：Unit proof 的原始用户输入。
+    unitInput: String,
+    // protocolInput：协议成员 proof 的原始用户输入。
+    protocolInput: String,
     // isBusy：是否禁用所有动作按钮。
     isBusy: Boolean,
-    // hasRegexProof/hasTimestampProof：对应输入是否已经生成过 regex proof。
-    hasRegexProof: Boolean,
+    sourceIpVerificationSummary: String?,
+    destinationIpVerificationSummary: String?,
+    timestampVerificationSummary: String?,
+    portVerificationSummary: String?,
+    transVerificationSummary: String?,
+    unitVerificationSummary: String?,
+    protocolVerificationSummary: String?,
+    regexRecordVerificationSummary: String?,
+    // hasSourceIpProof...hasProtocolProof：对应输入是否已经生成过本地 proof。
+    hasSourceIpProof: Boolean,
+    hasDestinationIpProof: Boolean,
     hasTimestampProof: Boolean,
+    hasPortProof: Boolean,
+    hasTransProof: Boolean,
+    hasUnitProof: Boolean,
+    hasProtocolProof: Boolean,
+    hasRegexRecordProof: Boolean,
     // onDismiss：关闭弹窗。
     onDismiss: () -> Unit,
-    // onIpv4InputChange：更新 IPv4 验证输入。
-    onIpv4InputChange: (String) -> Unit,
-    // onGenerateIpv4Proof/onVerifyIpv4Proof：生成 proof 与验证 proof 的两步操作。
-    onGenerateIpv4Proof: () -> Unit,
-    onVerifyIpv4Proof: () -> Unit,
+    // onRegexImport...：更新、解析 JSON 文本或从文件选择 JSON 内容。
+    onRegexImportTextChange: (String) -> Unit,
+    onParseRegexImportText: () -> Unit,
+    onPickRegexJsonFile: () -> Unit,
+    // onGenerateAllProofs/onVerifyAllProofs：批量生成和批量验证当前全部 Regex proof。
+    onGenerateAllProofs: () -> Unit,
+    onVerifyAllProofs: () -> Unit,
+    onGenerateRecordProof: () -> Unit,
+    onViewRecordProof: () -> Unit,
+    onVerifyRecordProof: () -> Unit,
+    onSendRecordProofToServer: () -> Unit,
+    // onSourceIpInputChange：更新 Source IP 验证输入。
+    onSourceIpInputChange: (String) -> Unit,
+    // onGenerateSourceIpProof/onVerifySourceIpProof：生成 proof 与验证 proof 的两步操作。
+    onGenerateSourceIpProof: () -> Unit,
+    onVerifySourceIpProof: () -> Unit,
+    // onDestinationIpInputChange：更新 Destination IP 验证输入。
+    onDestinationIpInputChange: (String) -> Unit,
+    // onGenerateDestinationIpProof/onVerifyDestinationIpProof：生成 proof 与验证 proof 的两步操作。
+    onGenerateDestinationIpProof: () -> Unit,
+    onVerifyDestinationIpProof: () -> Unit,
     // onTimestampInputChange：更新时间戳验证输入。
     onTimestampInputChange: (String) -> Unit,
     // onGenerateTimestampProof/onVerifyTimestampProof：时间戳 proof 的生成和验证操作。
     onGenerateTimestampProof: () -> Unit,
-    onVerifyTimestampProof: () -> Unit
+    onVerifyTimestampProof: () -> Unit,
+    // onPortInputChange：更新端口验证输入。
+    onPortInputChange: (String) -> Unit,
+    // onGeneratePortProof/onVerifyPortProof：端口 proof 的生成和验证操作。
+    onGeneratePortProof: () -> Unit,
+    onVerifyPortProof: () -> Unit,
+    // onTransInputChange：更新事务 ID 验证输入。
+    onTransInputChange: (String) -> Unit,
+    // onGenerateTransProof/onVerifyTransProof：事务 ID proof 的生成和验证操作。
+    onGenerateTransProof: () -> Unit,
+    onVerifyTransProof: () -> Unit,
+    // onUnitInputChange：更新 Unit 验证输入。
+    onUnitInputChange: (String) -> Unit,
+    // onGenerateUnitProof/onVerifyUnitProof：Unit proof 的生成和验证操作。
+    onGenerateUnitProof: () -> Unit,
+    onVerifyUnitProof: () -> Unit,
+    // onProtocolInputChange：更新协议验证输入。
+    onProtocolInputChange: (String) -> Unit,
+    // onGenerateProtocolProof/onVerifyProtocolProof：协议 proof 的生成和验证操作。
+    onGenerateProtocolProof: () -> Unit,
+    onVerifyProtocolProof: () -> Unit
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1426,17 +2436,87 @@ private fun RegexSetDialog(
                     CircularProgressIndicator(modifier = Modifier.padding(4.dp))
                 }
                 OutlinedTextField(
-                    value = ipv4Input,
-                    onValueChange = onIpv4InputChange,
+                    value = regexImportText,
+                    onValueChange = onRegexImportTextChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !isBusy,
+                    minLines = 3,
+                    maxLines = 6,
+                    shape = RoundedCornerShape(8.dp),
+                    label = { Text("JSON text or file content", fontSize = 12.sp) },
+                    textStyle = MaterialTheme.typography.bodySmall
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    CompactActionButton(
+                        "Apply JSON",
+                        enabled = !isBusy,
+                        modifier = Modifier.weight(1f),
+                        onClick = onParseRegexImportText
+                    )
+                    CompactActionButton(
+                        "Pick file",
+                        enabled = !isBusy,
+                        outlined = true,
+                        modifier = Modifier.weight(1f),
+                        onClick = onPickRegexJsonFile
+                    )
+                }
+                Text(
+                    "Record proof",
+                    modifier = Modifier.fillMaxWidth(),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                CompactActionButton("Generate record proof", enabled = !isBusy, onClick = onGenerateRecordProof)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    CompactActionButton(
+                        "View record proof",
+                        enabled = !isBusy && regexRecordVerificationSummary != null,
+                        outlined = true,
+                        modifier = Modifier.weight(1f),
+                        onClick = onViewRecordProof
+                    )
+                    CompactActionButton(
+                        "Verify record proof",
+                        enabled = !isBusy && hasRegexRecordProof,
+                        outlined = true,
+                        modifier = Modifier.weight(1f),
+                        onClick = onVerifyRecordProof
+                    )
+                }
+                CompactActionButton(
+                    "Send record proof to server",
+                    enabled = !isBusy && hasRegexRecordProof,
+                    onClick = onSendRecordProofToServer
+                )
+                HorizontalDivider()
+                OutlinedTextField(
+                    value = sourceIpInput,
+                    onValueChange = onSourceIpInputChange,
                     modifier = Modifier.fillMaxWidth(),
                     enabled = !isBusy,
                     singleLine = true,
                     shape = RoundedCornerShape(8.dp),
-                    label = { Text("IPv4 address", fontSize = 12.sp) },
+                    label = { Text("Source IP", fontSize = 12.sp) },
                     textStyle = MaterialTheme.typography.bodySmall
                 )
-                CompactActionButton("Generate IPv4 proof", enabled = !isBusy, onClick = onGenerateIpv4Proof)
-                CompactActionButton("Verify IPv4 proof", enabled = !isBusy && hasRegexProof, outlined = true, onClick = onVerifyIpv4Proof)
+                HorizontalDivider()
+                OutlinedTextField(
+                    value = destinationIpInput,
+                    onValueChange = onDestinationIpInputChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !isBusy,
+                    singleLine = true,
+                    shape = RoundedCornerShape(8.dp),
+                    label = { Text("Destination IP", fontSize = 12.sp) },
+                    textStyle = MaterialTheme.typography.bodySmall
+                )
                 HorizontalDivider()
                 OutlinedTextField(
                     value = timestampInput,
@@ -1448,12 +2528,49 @@ private fun RegexSetDialog(
                     label = { Text("Timestamp", fontSize = 12.sp) },
                     textStyle = MaterialTheme.typography.bodySmall
                 )
-                CompactActionButton("Generate timestamp proof", enabled = !isBusy, onClick = onGenerateTimestampProof)
-                CompactActionButton(
-                    "Verify timestamp proof",
-                    enabled = !isBusy && hasTimestampProof,
-                    outlined = true,
-                    onClick = onVerifyTimestampProof
+                HorizontalDivider()
+                OutlinedTextField(
+                    value = portInput,
+                    onValueChange = onPortInputChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !isBusy,
+                    singleLine = true,
+                    shape = RoundedCornerShape(8.dp),
+                    label = { Text("Port", fontSize = 12.sp) },
+                    textStyle = MaterialTheme.typography.bodySmall
+                )
+                HorizontalDivider()
+                OutlinedTextField(
+                    value = transInput,
+                    onValueChange = onTransInputChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !isBusy,
+                    singleLine = true,
+                    shape = RoundedCornerShape(8.dp),
+                    label = { Text("Trans", fontSize = 12.sp) },
+                    textStyle = MaterialTheme.typography.bodySmall
+                )
+                HorizontalDivider()
+                OutlinedTextField(
+                    value = unitInput,
+                    onValueChange = onUnitInputChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !isBusy,
+                    singleLine = true,
+                    shape = RoundedCornerShape(8.dp),
+                    label = { Text("Unit", fontSize = 12.sp) },
+                    textStyle = MaterialTheme.typography.bodySmall
+                )
+                HorizontalDivider()
+                OutlinedTextField(
+                    value = protocolInput,
+                    onValueChange = onProtocolInputChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !isBusy,
+                    singleLine = true,
+                    shape = RoundedCornerShape(8.dp),
+                    label = { Text("Protocol", fontSize = 12.sp) },
+                    textStyle = MaterialTheme.typography.bodySmall
                 )
             }
         },
@@ -1461,6 +2578,7 @@ private fun RegexSetDialog(
             CompactActionButton("Close", enabled = !isBusy, outlined = true, onClick = onDismiss)
         }
     )
+
 }
 
 @Composable
@@ -1476,11 +2594,14 @@ private fun ViewSetDialog(
     keyRegistration: LocationKeyRegistration?,
     provingTime: String?,
     publicInputs: String?,
-    serverResponse: String?,
-    reportSummary: String?,
-    performanceSummary: String?,
-    ipv4VerificationSummary: String?,
+    sourceIpVerificationSummary: String?,
+    destinationIpVerificationSummary: String?,
     timestampVerificationSummary: String?,
+    portVerificationSummary: String?,
+    transVerificationSummary: String?,
+    unitVerificationSummary: String?,
+    protocolVerificationSummary: String?,
+    regexRecordVerificationSummary: String?,
     verifyingTime: String?,
     valid: String?,
     signatureResult: LocationCommitmentSignature?,
@@ -1529,22 +2650,16 @@ private fun ViewSetDialog(
                     onClick = { onSelectOutput(OutputSection.PROOF) }
                 )
                 OutputSectionButton(
-                    label = "Server",
-                    enabled = serverResponse != null,
-                    selected = selectedOutput == OutputSection.SERVER,
-                    onClick = { onSelectOutput(OutputSection.SERVER) }
+                    label = "Source IP",
+                    enabled = sourceIpVerificationSummary != null,
+                    selected = selectedOutput == OutputSection.SOURCE_IP,
+                    onClick = { onSelectOutput(OutputSection.SOURCE_IP) }
                 )
                 OutputSectionButton(
-                    label = "Stats",
-                    enabled = performanceSummary != null,
-                    selected = selectedOutput == OutputSection.PERFORMANCE,
-                    onClick = { onSelectOutput(OutputSection.PERFORMANCE) }
-                )
-                OutputSectionButton(
-                    label = "IPv4",
-                    enabled = ipv4VerificationSummary != null,
-                    selected = selectedOutput == OutputSection.IPV4,
-                    onClick = { onSelectOutput(OutputSection.IPV4) }
+                    label = "Destination IP",
+                    enabled = destinationIpVerificationSummary != null,
+                    selected = selectedOutput == OutputSection.DESTINATION_IP,
+                    onClick = { onSelectOutput(OutputSection.DESTINATION_IP) }
                 )
                 OutputSectionButton(
                     label = "Timestamp",
@@ -1553,10 +2668,34 @@ private fun ViewSetDialog(
                     onClick = { onSelectOutput(OutputSection.TIMESTAMP) }
                 )
                 OutputSectionButton(
-                    label = "Report",
-                    enabled = reportSummary != null,
-                    selected = selectedOutput == OutputSection.REPORT,
-                    onClick = { onSelectOutput(OutputSection.REPORT) }
+                    label = "Port",
+                    enabled = portVerificationSummary != null,
+                    selected = selectedOutput == OutputSection.PORT,
+                    onClick = { onSelectOutput(OutputSection.PORT) }
+                )
+                OutputSectionButton(
+                    label = "Trans",
+                    enabled = transVerificationSummary != null,
+                    selected = selectedOutput == OutputSection.TRANS,
+                    onClick = { onSelectOutput(OutputSection.TRANS) }
+                )
+                OutputSectionButton(
+                    label = "Unit",
+                    enabled = unitVerificationSummary != null,
+                    selected = selectedOutput == OutputSection.UNIT,
+                    onClick = { onSelectOutput(OutputSection.UNIT) }
+                )
+                OutputSectionButton(
+                    label = "Protocol",
+                    enabled = protocolVerificationSummary != null,
+                    selected = selectedOutput == OutputSection.PROTOCOL,
+                    onClick = { onSelectOutput(OutputSection.PROTOCOL) }
+                )
+                OutputSectionButton(
+                    label = "Record",
+                    enabled = regexRecordVerificationSummary != null,
+                    selected = selectedOutput == OutputSection.RECORD,
+                    onClick = { onSelectOutput(OutputSection.RECORD) }
                 )
                 OutputSectionButton(
                     label = "Verification",
@@ -1682,11 +2821,14 @@ private fun OutputSectionDialog(
     keyRegistration: LocationKeyRegistration?,
     provingTime: String?,
     publicInputs: String?,
-    serverResponse: String?,
-    reportSummary: String?,
-    performanceSummary: String?,
-    ipv4VerificationSummary: String?,
+    sourceIpVerificationSummary: String?,
+    destinationIpVerificationSummary: String?,
     timestampVerificationSummary: String?,
+    portVerificationSummary: String?,
+    transVerificationSummary: String?,
+    unitVerificationSummary: String?,
+    protocolVerificationSummary: String?,
+    regexRecordVerificationSummary: String?,
     verifyingTime: String?,
     valid: String?,
     signatureResult: LocationCommitmentSignature?,
@@ -1736,24 +2878,36 @@ private fun OutputSectionDialog(
                         Text(publicInputs ?: "No proof summary", style = MaterialTheme.typography.bodyMedium)
                     }
 
-                    OutputSection.SERVER -> {
-                        Text(serverResponse ?: "No server response", style = MaterialTheme.typography.bodyMedium)
+                    OutputSection.SOURCE_IP -> {
+                        Text(sourceIpVerificationSummary ?: "No Source IP verification output", style = MaterialTheme.typography.bodyMedium)
                     }
 
-                    OutputSection.PERFORMANCE -> {
-                        Text(performanceSummary ?: "No performance stats", style = MaterialTheme.typography.bodyMedium)
-                    }
-
-                    OutputSection.IPV4 -> {
-                        Text(ipv4VerificationSummary ?: "No IPv4 verification output", style = MaterialTheme.typography.bodyMedium)
+                    OutputSection.DESTINATION_IP -> {
+                        Text(destinationIpVerificationSummary ?: "No Destination IP verification output", style = MaterialTheme.typography.bodyMedium)
                     }
 
                     OutputSection.TIMESTAMP -> {
                         Text(timestampVerificationSummary ?: "No timestamp verification output", style = MaterialTheme.typography.bodyMedium)
                     }
 
-                    OutputSection.REPORT -> {
-                        Text(reportSummary ?: "No experiment report", style = MaterialTheme.typography.bodyMedium)
+                    OutputSection.PORT -> {
+                        Text(portVerificationSummary ?: "No port verification output", style = MaterialTheme.typography.bodyMedium)
+                    }
+
+                    OutputSection.TRANS -> {
+                        Text(transVerificationSummary ?: "No Trans verification output", style = MaterialTheme.typography.bodyMedium)
+                    }
+
+                    OutputSection.UNIT -> {
+                        Text(unitVerificationSummary ?: "No Unit verification output", style = MaterialTheme.typography.bodyMedium)
+                    }
+
+                    OutputSection.PROTOCOL -> {
+                        Text(protocolVerificationSummary ?: "No protocol verification output", style = MaterialTheme.typography.bodyMedium)
+                    }
+
+                    OutputSection.RECORD -> {
+                        Text(regexRecordVerificationSummary ?: "No record proof output", style = MaterialTheme.typography.bodyMedium)
                     }
 
                     OutputSection.VERIFICATION -> {
@@ -1817,11 +2971,16 @@ private fun explainedValue(label: String, value: String, meaning: String): Strin
     return "$label: $renderedValue（$meaning）"
 }
 
+/** 简洁输出格式，用于操作弹窗，避免长解释堆叠。 */
+private fun compactValue(label: String, value: String): String {
+    return "$label: ${value.ifBlank { "-" }}"
+}
+
 /** 将 Circom proof 公开输入转换为 UI 摘要。 */
 private fun formatProofSummary(proofResult: CircomProofResult): String {
     return listOf(
-        explainedValue("Public commitment", shortValue(proofResult.inputs.firstOrNull().orEmpty()), "ZK proof 绑定的公开承诺"),
-        explainedValue("Public inputs", proofResult.inputs.size.toString(), "提交给服务端验证的公开输入数量")
+        compactValue("Commitment", shortValue(proofResult.inputs.firstOrNull().orEmpty())),
+        compactValue("Public inputs", proofResult.inputs.size.toString())
     ).joinToString("\n")
 }
 
@@ -1882,17 +3041,265 @@ private fun formatIpv4VerificationSummary(
     verifyingMs: Long?,
     errorMessage: String?
 ): String {
-    return listOf(
-        explainedValue("Raw input", rawInput, "用户在手机端输入的 IPv4 字符串"),
-        explainedValue("Normalized input", normalizedInput.orEmpty(), "进入电路前按段左补零后的固定 15 字节字符串"),
-        explainedValue("Proof generated", proofGenerated.toString(), "true 表示已经本地生成 regex_ip proof"),
-        explainedValue("Proof verified", proofVerified?.toString().orEmpty(), "true 表示已经本地验证生成出来的 proof"),
-        explainedValue("ZK IPv4 valid", accepted?.toString().orEmpty(), "true 表示本地 proof 生成和 proof 验证都成功，且公开输出为 1"),
-        explainedValue("Public output", proofInputs.firstOrNull().orEmpty(), "regex_ip 电路的公开输出，成功时为 1"),
-        explainedValue("Proof generation", provingMs?.let { "$it ms" }.orEmpty(), "手机端本地生成 IPv4 proof 的耗时"),
-        explainedValue("Proof verification", verifyingMs?.let { "$it ms" }.orEmpty(), "手机端本地验证 IPv4 proof 的耗时"),
-        explainedValue("Failure reason", errorMessage.orEmpty(), "失败时这里显示预处理或电路约束失败原因")
+    return listOfNotNull(
+        compactValue("Input", rawInput),
+        normalizedInput?.let { compactValue("Circuit input", it) },
+        compactValue("Generated", proofGenerated.toString()),
+        proofVerified?.let { compactValue("Verified", it.toString()) },
+        accepted?.let { compactValue("Valid", it.toString()) },
+        proofInputs.firstOrNull()?.let { compactValue("Public output", it) },
+        provingMs?.let { compactValue("Proving", "$it ms") },
+        verifyingMs?.let { compactValue("Verifying", "$it ms") },
+        errorMessage?.let { compactValue("Error", it) }
     ).joinToString("\n")
+}
+
+/** 将用户端口或事务 ID 输入转换为 port_trans 电路输入 JSON。 */
+private fun buildPortRegexCircuitInput(rawInput: String, fieldLabel: String = "Port"): Pair<String, String> {
+    return buildUintDecimalCircuitInput(
+        rawInput = rawInput,
+        fieldLabel = fieldLabel,
+        digits = 5,
+        maxValue = 65535
+    )
+}
+
+/** 将通用十进制数字字段输入转换为 UintDecimalField 电路输入 JSON。 */
+private fun buildUintDecimalCircuitInput(
+    rawInput: String,
+    fieldLabel: String,
+    digits: Int,
+    maxValue: Int
+): Pair<String, String> {
+    // trimmedInput：去掉首尾空白后的用户数字字段输入。
+    val trimmedInput = rawInput.trim()
+    require(trimmedInput.isNotEmpty()) {
+        "$fieldLabel must not be empty"
+    }
+    require(trimmedInput.length <= digits) {
+        "$fieldLabel must be at most $digits digits"
+    }
+    require(trimmedInput.all { it in '0'..'9' }) {
+        "$fieldLabel must contain only digits"
+    }
+
+    // fieldValue：解析后的十进制整数，范围必须和入口电路的 MAX_VALUE 参数一致。
+    val fieldValue = trimmedInput.toInt()
+    require(fieldValue in 0..maxValue) {
+        "$fieldLabel must be in 0..$maxValue"
+    }
+
+    // normalizedField：电路实际验证的固定 digits 字节数字字符串。
+    val normalizedField = trimmedInput.padStart(digits, '0')
+    // asciiValues：normalizedField 的 ASCII code point，电路会再次验证数字格式和范围。
+    val asciiValues = normalizedField.map { char -> char.code.toString() }
+    val circuitInput = JSONObject()
+        .put("msg", JSONArray(asciiValues))
+        .toString()
+
+    return circuitInput to normalizedField
+}
+
+/** 生成端口本地 ZK 正则验证摘要。 */
+private fun formatPortVerificationSummary(
+    rawInput: String,
+    normalizedInput: String?,
+    proofGenerated: Boolean,
+    proofVerified: Boolean?,
+    accepted: Boolean?,
+    proofInputs: List<String>,
+    provingMs: Long?,
+    verifyingMs: Long?,
+    errorMessage: String?
+): String {
+    return formatUint16VerificationSummary(
+        label = "Port",
+        rawInput = rawInput,
+        normalizedInput = normalizedInput,
+        proofGenerated = proofGenerated,
+        proofVerified = proofVerified,
+        accepted = accepted,
+        proofInputs = proofInputs,
+        provingMs = provingMs,
+        verifyingMs = verifyingMs,
+        errorMessage = errorMessage
+    )
+}
+
+/** 生成复用 port_trans 电路的 16-bit 数字字段本地 ZK 验证摘要。 */
+private fun formatUint16VerificationSummary(
+    label: String,
+    rawInput: String,
+    normalizedInput: String?,
+    proofGenerated: Boolean,
+    proofVerified: Boolean?,
+    accepted: Boolean?,
+    proofInputs: List<String>,
+    provingMs: Long?,
+    verifyingMs: Long?,
+    errorMessage: String?
+): String {
+    return formatUintFieldVerificationSummary(
+        label = label,
+        rawInput = rawInput,
+        normalizedInput = normalizedInput,
+        maxValue = 65535,
+        proofGenerated = proofGenerated,
+        proofVerified = proofVerified,
+        accepted = accepted,
+        proofInputs = proofInputs,
+        provingMs = provingMs,
+        verifyingMs = verifyingMs,
+        errorMessage = errorMessage
+    )
+}
+
+/** 生成通用数字字段本地 ZK 验证摘要。 */
+private fun formatUintFieldVerificationSummary(
+    label: String,
+    rawInput: String,
+    normalizedInput: String?,
+    maxValue: Int,
+    proofGenerated: Boolean,
+    proofVerified: Boolean?,
+    accepted: Boolean?,
+    proofInputs: List<String>,
+    provingMs: Long?,
+    verifyingMs: Long?,
+    errorMessage: String?
+): String {
+    val circuitName = if (maxValue == 65535) "port_trans" else "unit"
+    return listOfNotNull(
+        compactValue("Field", label),
+        compactValue("Input", rawInput),
+        normalizedInput?.let { compactValue("Circuit input", it) },
+        compactValue("Circuit", circuitName),
+        compactValue("Generated", proofGenerated.toString()),
+        proofVerified?.let { compactValue("Verified", it.toString()) },
+        accepted?.let { compactValue("Valid", it.toString()) },
+        proofInputs.firstOrNull()?.let { compactValue("Public output", it) },
+        provingMs?.let { compactValue("Proving", "$it ms") },
+        verifyingMs?.let { compactValue("Verifying", "$it ms") },
+        errorMessage?.let { compactValue("Error", it) }
+    ).joinToString("\n")
+}
+
+/** 将用户协议输入转换为 protocol_regex 电路输入 JSON。 */
+private fun buildProtocolRegexCircuitInput(rawInput: String): Pair<String, String> {
+    // protocol：去掉首尾空白后的协议字段，当前大小写敏感。
+    val protocol = rawInput.trim()
+    // allowedProtocols：当前 PLC 报文实验接受的协议名称集合。
+    val allowedProtocols = setOf("Modbus/TCP", "ARP", "DHCP", "TCP")
+    require(protocol in allowedProtocols) {
+        "Protocol must be one of Modbus/TCP, ARP, DHCP, TCP"
+    }
+
+    // asciiBytes：固定 10 字节电路输入；短协议右侧用 0 补齐。
+    val asciiBytes = MutableList(10) { "0" }
+    protocol.forEachIndexed { index, char ->
+        asciiBytes[index] = char.code.toString()
+    }
+    val circuitInput = JSONObject()
+        .put("msg", JSONArray(asciiBytes))
+        .toString()
+
+    return circuitInput to asciiBytes.joinToString(prefix = "[", postfix = "]")
+}
+
+/** 生成协议成员本地 ZK 验证摘要。 */
+private fun formatProtocolVerificationSummary(
+    rawInput: String,
+    normalizedInput: String?,
+    proofGenerated: Boolean,
+    proofVerified: Boolean?,
+    accepted: Boolean?,
+    proofInputs: List<String>,
+    provingMs: Long?,
+    verifyingMs: Long?,
+    errorMessage: String?
+): String {
+    return listOfNotNull(
+        compactValue("Input", rawInput),
+        normalizedInput?.let { compactValue("Circuit bytes", it) },
+        compactValue("Generated", proofGenerated.toString()),
+        proofVerified?.let { compactValue("Verified", it.toString()) },
+        accepted?.let { compactValue("Valid", it.toString()) },
+        proofInputs.firstOrNull()?.let { compactValue("Public output", it) },
+        provingMs?.let { compactValue("Proving", "$it ms") },
+        verifyingMs?.let { compactValue("Verifying", "$it ms") },
+        errorMessage?.let { compactValue("Error", it) }
+    ).joinToString("\n")
+}
+
+/** 生成联合日志记录 proof 的本地 ZK 验证摘要。 */
+private fun formatRegexRecordVerificationSummary(
+    recordInput: RegexRecordCircuitInput?,
+    proofGenerated: Boolean,
+    proofVerified: Boolean?,
+    accepted: Boolean?,
+    proofInputs: List<String>,
+    provingMs: Long?,
+    verifyingMs: Long?,
+    errorMessage: String?
+): String {
+    return listOfNotNull(
+        compactValue("Generated", proofGenerated.toString()),
+        proofVerified?.let { compactValue("Verified", it.toString()) },
+        accepted?.let { compactValue("Valid", it.toString()) },
+        provingMs?.let { compactValue("Proving", "$it ms") },
+        verifyingMs?.let { compactValue("Verifying", "$it ms") },
+        recordInput?.recordCommitment?.let { compactValue("Commitment", shortValue(it)) },
+        recordInput?.normalizedSourceIp?.let { compactValue("Source IP", it) },
+        recordInput?.normalizedDestinationIp?.let { compactValue("Destination IP", it) },
+        recordInput?.normalizedTimestamp?.let { compactValue("Timestamp", it) },
+        recordInput?.normalizedProtocolBytes?.let { compactValue("Protocol bytes", it) },
+        proofInputs.firstOrNull()?.let { compactValue("Public input", shortValue(it)) },
+        errorMessage?.let { compactValue("Error", it) }
+    ).joinToString("\n")
+}
+
+private data class RegexRecordProofVerification(
+    val verified: Boolean,
+    val backend: String,
+    val detail: String?
+)
+
+/** 联合日志记录 proof 的本地验证：Android 当前 native 构建使用 Arkworks。 */
+private fun verifyRegexRecordProofWithFallback(
+    zkeyPath: String,
+    proofResult: CircomProofResult
+): RegexRecordProofVerification {
+    val arkworks = runCatching {
+        verifyCircomProof(zkeyPath, proofResult, ProofLib.ARKWORKS)
+    }
+    if (arkworks.getOrNull() == true) {
+        return RegexRecordProofVerification(
+            verified = true,
+            backend = "Arkworks",
+            detail = null
+        )
+    }
+
+    val rapidsnark = runCatching {
+        verifyCircomProof(zkeyPath, proofResult, ProofLib.RAPIDSNARK)
+    }
+    if (rapidsnark.getOrNull() == true) {
+        return RegexRecordProofVerification(
+            verified = true,
+            backend = "Rapidsnark fallback",
+            detail = arkworks.exceptionOrNull()?.message ?: "Arkworks returned false"
+        )
+    }
+
+    val detail = listOfNotNull(
+        arkworks.exceptionOrNull()?.message ?: "Arkworks returned false",
+        rapidsnark.exceptionOrNull()?.message ?: "Rapidsnark returned false"
+    ).joinToString("; ")
+    return RegexRecordProofVerification(
+        verified = false,
+        backend = "Arkworks + Rapidsnark fallback",
+        detail = detail
+    )
 }
 
 /** 将用户时间戳输入转换为 regex_timestamp 电路输入 JSON，并在进入 native prover 前执行同等语义校验。 */
@@ -1953,16 +3360,16 @@ private fun formatTimestampVerificationSummary(
     verifyingMs: Long?,
     errorMessage: String?
 ): String {
-    return listOf(
-        explainedValue("Raw input", rawInput, "用户在手机端输入的时间戳字符串"),
-        explainedValue("Circuit input", normalizedInput.orEmpty(), "进入电路的固定格式 YYYY-MM-DD HH:mm:ss.ffffff"),
-        explainedValue("Proof generated", proofGenerated.toString(), "true 表示已经本地生成 regex_timestamp proof"),
-        explainedValue("Proof verified", proofVerified?.toString().orEmpty(), "true 表示已经本地验证生成出来的 proof"),
-        explainedValue("ZK timestamp valid", accepted?.toString().orEmpty(), "true 表示格式、字段范围、月份天数和闰年规则均通过，并且 proof 验证成功"),
-        explainedValue("Public output", proofInputs.firstOrNull().orEmpty(), "regex_timestamp 电路的公开输出，成功时为 1"),
-        explainedValue("Proof generation", provingMs?.let { "$it ms" }.orEmpty(), "手机端本地生成时间戳 proof 的耗时"),
-        explainedValue("Proof verification", verifyingMs?.let { "$it ms" }.orEmpty(), "手机端本地验证时间戳 proof 的耗时"),
-        explainedValue("Failure reason", errorMessage.orEmpty(), "失败时这里显示预处理或电路约束失败原因")
+    return listOfNotNull(
+        compactValue("Input", rawInput),
+        normalizedInput?.let { compactValue("Circuit input", it) },
+        compactValue("Generated", proofGenerated.toString()),
+        proofVerified?.let { compactValue("Verified", it.toString()) },
+        accepted?.let { compactValue("Valid", it.toString()) },
+        proofInputs.firstOrNull()?.let { compactValue("Public output", it) },
+        provingMs?.let { compactValue("Proving", "$it ms") },
+        verifyingMs?.let { compactValue("Verifying", "$it ms") },
+        errorMessage?.let { compactValue("Error", it) }
     ).joinToString("\n")
 }
 
@@ -1985,11 +3392,14 @@ private enum class OutputSection(val title: String) {
     GNSS("GNSS"),
     KEYSTORE("Keystore"),
     PROOF("Proof"),
-    SERVER("Server"),
-    PERFORMANCE("Stats"),
-    IPV4("IPv4"),
+    SOURCE_IP("Source IP"),
+    DESTINATION_IP("Destination IP"),
     TIMESTAMP("Timestamp"),
-    REPORT("Report"),
+    PORT("Port"),
+    TRANS("Trans"),
+    UNIT("Unit"),
+    PROTOCOL("Protocol"),
+    RECORD("Record"),
     VERIFICATION("Verification"),
     SIGNATURE("Signature"),
     ERROR("Error")
@@ -2003,20 +3413,6 @@ private data class OperationStatus(
     val success: Boolean,
     // message：详细展示文本。
     val message: String
-)
-
-/** 服务端 /verify-proof 响应摘要。 */
-private data class ServerProofResponse(
-    // statusCode：HTTP 状态码。
-    val statusCode: Int,
-    // body：原始响应 body。
-    val body: String,
-    // valid：客户端解析出的最终验证结果。
-    val valid: Boolean,
-    // summary：面向 UI 的中文解释。
-    val summary: String,
-    // elapsedMs：客户端观察到的请求响应耗时。
-    val elapsedMs: Long
 )
 
 /** 注册/登录响应摘要。 */
@@ -2035,6 +3431,14 @@ private data class ServerNonceResponse(
     val expiresAt: Long,
     // expiresInMs：服务端返回的剩余有效时间。
     val expiresInMs: Long
+)
+
+/** 服务端 proof 验证结果摘要。 */
+private data class ServerProofVerificationResponse(
+    // valid：服务端对 proof + signature + nonce 的整体判定。
+    val valid: Boolean,
+    // summary：面向 UI 展示的验证摘要。
+    val summary: String
 )
 
 private fun formatCoordinate(value: Double): String {
@@ -2145,6 +3549,170 @@ private fun requestServerNonce(serverUrl: String): ServerNonceResponse {
     return parseNonceResponse(response.body)
 }
 
+private fun postProofToServer(
+    serverUrl: String,
+    token: String,
+    proofResult: CircomProofResult,
+    signature: LocationCommitmentSignature
+): String {
+    // response：服务端 /verify-proof 对 proof、签名、nonce 的整体验证结果。
+    val response = postJson(
+        url = endpointUrlFor(serverUrl, "/verify-proof"),
+        body = proofResultToServerPayload(proofResult, signature),
+        bearerToken = token
+    )
+    val parsed = formatServerProofResponse(response.body)
+    if (!parsed.valid) {
+        error(parsed.summary)
+    }
+    return parsed.summary
+}
+
+private fun postRegexRecordProofToServer(
+    serverUrl: String,
+    token: String,
+    proofResult: CircomProofResult,
+    zkeyPath: String
+): String {
+    val response = postJson(
+        url = endpointUrlFor(serverUrl, "/verify-regex-proof"),
+        body = proofOnlyPayload(proofResult, zkeyPath),
+        bearerToken = token
+    )
+    val parsed = formatRegexServerProofResponse(response.body)
+    if (!parsed.valid) {
+        error(parsed.summary)
+    }
+    return parsed.summary
+}
+
+private fun proofResultToServerPayload(
+    proofResult: CircomProofResult,
+    signature: LocationCommitmentSignature
+): JSONObject {
+    return JSONObject()
+        .put("proof", proofToJson(proofResult.proof))
+        .put("inputs", JSONArray(proofResult.inputs))
+        .put("publicSignals", JSONArray(proofResult.inputs))
+        .put(
+            "tee",
+            JSONObject()
+                .put("payload", signature.payload)
+                .put("signature", signature.signatureBase64)
+        )
+}
+
+private fun proofOnlyPayload(proofResult: CircomProofResult, zkeyPath: String): JSONObject {
+    return JSONObject()
+        .put("proof", proofToJson(proofResult.proof))
+        .put("inputs", JSONArray(proofResult.inputs))
+        .put("publicSignals", JSONArray(proofResult.inputs))
+        .put(
+            "clientArtifacts",
+            JSONObject()
+                .put("regexRecordZkeySha256", sha256Hex(File(zkeyPath)))
+        )
+}
+
+private fun proofToJson(proof: CircomProof): JSONObject {
+    return JSONObject()
+        .put("a", g1ToJson(proof.a))
+        .put("b", g2ToJson(proof.b))
+        .put("c", g1ToJson(proof.c))
+        .put("protocol", proof.protocol.ifBlank { "groth16" })
+        .put("curve", proof.curve.ifBlank { "bn128" })
+}
+
+private fun g1ToJson(point: G1): JSONObject {
+    return JSONObject()
+        .put("x", point.x)
+        .put("y", point.y)
+        .put("z", point.z.ifBlank { "1" })
+}
+
+private fun g2ToJson(point: G2): JSONObject {
+    return JSONObject()
+        .put("x", JSONArray(point.x))
+        .put("y", JSONArray(point.y))
+        .put("z", JSONArray(point.z.ifEmpty { listOf("1", "0") }))
+}
+
+private fun formatServerProofResponse(body: String): ServerProofVerificationResponse {
+    // json/signature/nonce/user：服务端返回的 proof、签名、nonce 和当前用户验证摘要。
+    val json = JSONObject(body)
+    val signature = json.optJSONObject("signature")
+    val nonce = json.optJSONObject("nonce")
+    val user = json.optJSONObject("user")
+    val valid = json.optBoolean("valid", false)
+    val summary = listOf(
+        compactValue("Server valid", valid.toString()),
+        compactValue("Proof valid", json.optBoolean("proofValid", json.optBoolean("valid", false)).toString()),
+        compactValue("Signature valid", (signature?.optBoolean("signatureValid", false) ?: false).toString()),
+        compactValue("Commitment bound", (signature?.optBoolean("commitmentBound", false) ?: false).toString()),
+        compactValue("Nonce consumed", (nonce?.optBoolean("consumed", false) ?: false).toString()),
+        compactValue("User", user?.optString("username").orEmpty())
+    ).joinToString("\n")
+    return ServerProofVerificationResponse(valid = valid, summary = summary)
+}
+
+private fun formatRegexServerProofResponse(body: String): ServerProofVerificationResponse {
+    val json = JSONObject(body)
+    val user = json.optJSONObject("user")
+    val artifacts = json.optJSONObject("artifacts")
+    val clientArtifacts = artifacts?.optJSONObject("client")
+    val serverArtifacts = artifacts?.optJSONObject("server")
+    val valid = json.optBoolean("valid", false)
+    val summary = listOfNotNull(
+        compactValue("Server regex valid", valid.toString()),
+        compactValue("Proof valid", json.optBoolean("proofValid", valid).toString()),
+        compactValue("Commitment", shortValue(json.optString("recordCommitment"))),
+        compactValue("Public inputs", json.optInt("publicInputCount", 0).toString()),
+        json.optString("acceptedFormat").takeIf { it.isNotBlank() && it != "null" }?.let {
+            compactValue("Format", it)
+        },
+        formatServerAttempts(json.optJSONArray("attempts")).takeIf { it.isNotBlank() }?.let {
+            compactValue("Attempts", it)
+        },
+        clientArtifacts?.optString("regexRecordZkeySha256")?.takeIf { it.isNotBlank() && it != "null" }?.let {
+            compactValue("Client zkey", shortValue(it))
+        },
+        serverArtifacts?.optString("regexRecordZkeySha256")?.takeIf { it.isNotBlank() && it != "null" }?.let {
+            compactValue("Server zkey", shortValue(it))
+        },
+        serverArtifacts?.optString("regexRecordVerificationKeySha256")?.takeIf { it.isNotBlank() && it != "null" }?.let {
+            compactValue("Server vk", shortValue(it))
+        },
+        user?.optString("username")?.let { compactValue("User", it) },
+        json.optString("reason").takeIf { it.isNotBlank() && it != "null" }?.let {
+            compactValue("Reason", it)
+        }
+    ).joinToString("\n")
+    return ServerProofVerificationResponse(valid = valid, summary = summary)
+}
+
+private fun formatServerAttempts(attempts: JSONArray?): String {
+    if (attempts == null || attempts.length() == 0) return ""
+    return (0 until attempts.length()).joinToString(", ") { index ->
+        val attempt = attempts.optJSONObject(index)
+        val format = attempt?.optString("format").orEmpty().ifBlank { "unknown" }
+        val valid = attempt?.optBoolean("valid", false) ?: false
+        "$format=$valid"
+    }
+}
+
+private fun sha256Hex(file: File): String {
+    val digest = MessageDigest.getInstance("SHA-256")
+    file.inputStream().use { input ->
+        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        while (true) {
+            val read = input.read(buffer)
+            if (read <= 0) break
+            digest.update(buffer, 0, read)
+        }
+    }
+    return digest.digest().joinToString("") { byte -> "%02x".format(byte) }
+}
+
 private fun postLogout(serverUrl: String, token: String): String {
     // response：服务端撤销当前 session 的结果。
     val response = postJson(
@@ -2168,70 +3736,6 @@ private fun fetchActiveKeySummary(serverUrl: String, token: String): String {
     } else {
         formatKeySummary(key)
     }
-}
-
-/** 获取服务端性能统计 JSON。 */
-private fun fetchServerStats(serverUrl: String): JSONObject {
-    return JSONObject(getJson(endpointUrlFor(serverUrl, "/stats/performance")).body)
-}
-
-/** 获取服务端最新实验报告，并压缩为 UI 摘要。 */
-private fun fetchExperimentReport(serverUrl: String): String {
-    // json：服务端实验报告 JSON。
-    val json = JSONObject(getJson(endpointUrlFor(serverUrl, "/reports/latest")).body)
-    // stats/latestKey/latestProof：报告中的统计摘要和最近关键事件。
-    val stats = json.optJSONObject("stats")
-    val latestKey = json.optJSONObject("latestKeyRegister")
-    val latestProof = json.optJSONObject("latestProofVerify")
-    return listOf(
-        explainedValue("Generated at", json.optString("generatedAt"), "服务端生成报告的时间"),
-        explainedValue("Entries", json.optInt("sourceEntryCount", 0).toString(), "参与统计的交互日志条数"),
-        explainedValue("Proof verify count", stats?.optJSONObject("counts")?.optInt("proofVerify", 0).toString(), "服务端 proof verify 记录数量"),
-        explainedValue("Valid proof verifies", stats?.optInt("validProofVerifyCount", 0).toString(), "服务端最终 valid=true 的次数"),
-        explainedValue("Signature valid count", stats?.optInt("signatureValidCount", 0).toString(), "服务端验签成功次数"),
-        explainedValue("Nonce consumed count", stats?.optInt("nonceConsumedCount", 0).toString(), "服务端 nonce 成功消费次数"),
-        explainedValue("Latest key", latestKey?.optString("publicKeyFingerprint", "-").orEmpty(), "最近一次绑定 key 的公钥指纹"),
-        explainedValue("Latest proof valid", latestProof?.optBoolean("valid", false).toString(), "最近一次 proof 提交的最终结果"),
-        explainedValue("Latest verify ms", latestProof?.optLong("durationMs", 0L).toString(), "最近一次服务端 verify 耗时")
-    ).joinToString("\n")
-}
-
-/** 合并客户端本地耗时和服务端日志耗时，生成性能摘要。 */
-private fun buildPerformanceSummary(
-    clientProofTimes: List<Long>,
-    serverVerifyTimes: List<Long>,
-    serverStats: JSONObject
-): String {
-    // serverProofStats/serverKeyStats：服务端日志聚合出来的 proof/key register 耗时统计。
-    val serverProofStats = serverStats.optJSONObject("proofVerifyDurationMs")
-    val serverKeyStats = serverStats.optJSONObject("keyRegisterDurationMs")
-    return listOf(
-        explainedValue("Client proof samples", clientProofTimes.size.toString(), "本次 App 会话内 proof 生成样本数"),
-        explainedValue("Client proof time", summarizeLongs(clientProofTimes), "本次 App 会话内 proof 生成耗时统计"),
-        explainedValue("Client send/verify samples", serverVerifyTimes.size.toString(), "本次 App 会话内发送 proof 并接收响应样本数"),
-        explainedValue("Client send/verify time", summarizeLongs(serverVerifyTimes), "客户端观察到的网络往返和服务端处理总耗时"),
-        explainedValue("Server proof verify", formatJsonStats(serverProofStats), "服务端日志中的 proof verify 耗时统计"),
-        explainedValue("Server key register", formatJsonStats(serverKeyStats), "服务端日志中的 key register 耗时统计"),
-        explainedValue("Server valid proofs", serverStats.optInt("validProofVerifyCount", 0).toString(), "服务端最终 valid=true 的 proof verify 次数"),
-        explainedValue("Server signatures", serverStats.optInt("signatureValidCount", 0).toString(), "服务端 ECDSA 验签成功次数"),
-        explainedValue("Server nonces", serverStats.optInt("nonceConsumedCount", 0).toString(), "服务端 nonce 成功消费次数")
-    ).joinToString("\n")
-}
-
-/** 对 Long 毫秒样本做 count/avg/min/max 摘要。 */
-private fun summarizeLongs(values: List<Long>): String {
-    if (values.isEmpty()) return "n/a"
-    // min/max/avg：本地采样的最小、最大、平均耗时。
-    val min = values.minOrNull() ?: 0L
-    val max = values.maxOrNull() ?: 0L
-    val avg = values.average()
-    return "count=${values.size}, avg=${"%.2f".format(avg)} ms, min=$min ms, max=$max ms"
-}
-
-/** 格式化服务端返回的统计对象。 */
-private fun formatJsonStats(stats: JSONObject?): String {
-    if (stats == null || stats.optInt("count", 0) == 0) return "n/a"
-    return "count=${stats.optInt("count")}, avg=${stats.optDouble("avg")} ms, min=${stats.optLong("min")} ms, max=${stats.optLong("max")} ms"
 }
 
 /** 发送 GET JSON 请求。 */
@@ -2342,172 +3846,6 @@ private fun endpointUrlFor(serverUrl: String, path: String): URL {
         null,
         null
     ).toURL()
-}
-
-private fun postProofToServer(
-    serverUrl: String,
-    proofResult: CircomProofResult,
-    signatureResult: LocationCommitmentSignature?,
-    bearerToken: String,
-    h3Resolution: Int,
-    provingTimeMs: Long?
-): ServerProofResponse {
-    // payload：最终提交给 /verify-proof 的 JSON 字符串。
-    val payload = proofResultToServerPayload(proofResult, signatureResult, h3Resolution, provingTimeMs)
-    // connection：verify-proof POST 请求连接。
-    val connection = (URL(serverUrl).openConnection() as HttpURLConnection).apply {
-        requestMethod = "POST"
-        connectTimeout = 10_000
-        readTimeout = 20_000
-        doOutput = true
-        setRequestProperty("Content-Type", "application/json; charset=utf-8")
-        setRequestProperty("Accept", "application/json")
-        setRequestProperty("Prefer", "return=minimal")
-        setRequestProperty("Authorization", "Bearer $bearerToken")
-    }
-
-    return try {
-        connection.outputStream.use { output ->
-            output.write(payload.toByteArray(Charsets.UTF_8))
-        }
-
-        // startTime：从服务端开始处理响应前记录时间，用于客户端观察耗时。
-        val startTime = System.currentTimeMillis()
-        // statusCode：verify-proof HTTP 状态码。
-        val statusCode = connection.responseCode
-        // stream：成功和失败分别读取对应响应流。
-        val stream = if (statusCode in 200..299) {
-            connection.inputStream
-        } else {
-            connection.errorStream ?: connection.inputStream
-        }
-        // body：服务端 verify 响应文本。
-        val body = stream.bufferedReader().use { it.readText() }
-        // valid：尽量解析服务端 valid 字段，解析失败按 false。
-        val valid = try {
-            JSONObject(body).optBoolean("valid", false)
-        } catch (_: Exception) {
-            false
-        }
-
-        ServerProofResponse(
-            statusCode = statusCode,
-            body = body,
-            valid = statusCode in 200..299 && valid,
-            summary = formatServerProofResponse(statusCode, body),
-            elapsedMs = System.currentTimeMillis() - startTime
-        )
-    } finally {
-        connection.disconnect()
-    }
-}
-
-/** 将服务端 verify 响应格式化为中文解释文本。 */
-private fun formatServerProofResponse(statusCode: Int, body: String): String {
-    return try {
-        // json：服务端返回的验证结果 JSON。
-        val json = JSONObject(body)
-        if (statusCode !in 200..299) {
-            return "HTTP $statusCode（HTTP 状态码，非 2xx 表示请求失败）\n" +
-                explainedValue("Error", json.optString("error", body), "服务端返回的失败原因")
-        }
-
-        // lines：逐行积累 UI 展示文本。
-        val lines = mutableListOf<String>()
-        // signature/nonce：兼容完整响应中嵌套的 signature 和 nonce 对象。
-        val signature = json.optJSONObject("signature")
-        val nonce = json.optJSONObject("nonce")
-        // signatureValid/commitmentBound/nonceConsumed：兼容精简响应和完整响应两种字段形态。
-        val signatureValid = if (json.has("signatureValid")) {
-            json.optBoolean("signatureValid", false)
-        } else {
-            signature?.optBoolean("signatureValid", false) ?: false
-        }
-        val commitmentBound = if (json.has("commitmentBound")) {
-            json.optBoolean("commitmentBound", false)
-        } else {
-            signature?.optBoolean("commitmentBound", false) ?: false
-        }
-        val nonceConsumed = if (json.has("nonceConsumed")) {
-            json.optBoolean("nonceConsumed", false)
-        } else {
-            nonce?.optBoolean("consumed", false) ?: false
-        }
-        lines += "HTTP $statusCode（HTTP 状态码，200 表示服务端已处理请求）"
-        lines += explainedValue("Valid", json.optBoolean("valid", false).toString(), "最终结果，proof、签名、commitment 绑定和 nonce 全部通过才为 true")
-        lines += explainedValue("Proof", json.optBoolean("proofValid", false).toString(), "ZK proof 是否验证通过")
-        lines += explainedValue("Signature", signatureValid.toString(), "服务端是否用用户绑定公钥验证 ECDSA 签名通过")
-        lines += explainedValue("Commitment bound", commitmentBound.toString(), "TEE 签名 payload 中的 commitment 是否等于 proof 的公开输入")
-        lines += explainedValue("Nonce consumed", nonceConsumed.toString(), "服务端 nonce 是否已成功消费，用于防重放")
-        // reason：服务端给出的可选失败原因。
-        val reason = json.optString(
-            "reason",
-            signature?.optString("reason", nonce?.optString("reason", "") ?: "") ?: ""
-        )
-        if (reason.isNotBlank() && reason != "null") {
-            lines += explainedValue("Reason", reason, "服务端给出的失败或补充说明")
-        }
-        lines.joinToString("\n")
-    } catch (_: Exception) {
-        "HTTP $statusCode\n$body"
-    }
-}
-
-/** 将 mopro CircomProofResult 和 Keystore 签名组装成服务端 verify-proof 请求。 */
-private fun proofResultToServerPayload(
-    proofResult: CircomProofResult,
-    signatureResult: LocationCommitmentSignature?,
-    h3Resolution: Int,
-    provingTimeMs: Long?
-): String {
-    // proof：Groth16 proof 主体。
-    val proof = proofResult.proof
-    // proofJson：服务端 snarkjs verifier 可解析的 proof JSON。
-    val proofJson = JSONObject()
-        .put("a", g1ToJson(proof.a))
-        .put("b", g2ToJson(proof.b))
-        .put("c", g1ToJson(proof.c))
-        .put("protocol", proof.protocol)
-        .put("curve", proof.curve)
-
-    // requestJson：verify-proof 请求体，包含 proof、公开输入和实验指标。
-    val requestJson = JSONObject()
-        .put("proof", proofJson)
-        .put("inputs", JSONArray(proofResult.inputs))
-        .put(
-            "metrics",
-            JSONObject()
-                .put("h3Resolution", h3Resolution)
-                .put("clientProvingTimeMs", provingTimeMs ?: JSONObject.NULL)
-        )
-
-    if (signatureResult != null) {
-        requestJson.put(
-            "tee",
-            JSONObject()
-                .put("payload", signatureResult.payload)
-                .put("signature", signatureResult.signatureBase64)
-        )
-    }
-
-    return requestJson
-        .toString()
-}
-
-/** 将 G1 点转换为服务端可解析的 JSON。 */
-private fun g1ToJson(value: G1): JSONObject {
-    return JSONObject()
-        .put("x", value.x)
-        .put("y", value.y)
-        .put("z", value.z)
-}
-
-/** 将 G2 点转换为服务端可解析的 JSON。 */
-private fun g2ToJson(value: G2): JSONObject {
-    return JSONObject()
-        .put("x", JSONArray(value.x))
-        .put("y", JSONArray(value.y))
-        .put("z", JSONArray(value.z))
 }
 
 /** 构造空 proof 状态，用于 UI 初始化和清理旧 proof。 */

@@ -1,6 +1,6 @@
 # API 与数据字段说明
 
-更新时间：2026-05-16
+更新时间：2026-06-29
 
 本文档用于阅读代码时查字段含义。更完整的协议格式见 `docs/protocol.md`。
 
@@ -10,6 +10,9 @@
 |---|---|---:|---|
 | `POST /auth/register` | Android | 否 | 注册用户并返回 bearer token |
 | `POST /auth/login` | Android | 否 | 登录并返回 bearer token，同时清空旧 active key |
+| `POST /password/register` | Android | 否 | 验证密码策略 proof，保存 salt 和 commitment |
+| `GET /password/login-parameters` | Android | 否 | 按 userId 获取非秘密 salt 和 circuit version |
+| `POST /password/login` | Android | 否 | 比较客户端本地计算的 commitment 并返回 bearer session |
 | `POST /auth/logout` | Android | 是 | 注销当前 session |
 | `GET /auth/me` | Android/调试 | 是 | 查询当前登录用户 |
 | `POST /keys/register-nonce` | Android | 是 | 获取 key attestation challenge |
@@ -24,6 +27,8 @@
 | `GET /reports/latest` | Android/调试 | 否 | 导出实验报告 |
 
 ## 2. 登录接口
+
+密码主流程使用 `/password/*` 接口。`/auth/register` 和 `/auth/login` 是保留的旧明文密码兼容接口，不在当前 Android 主入口展示。
 
 ### `POST /auth/register`
 
@@ -226,4 +231,3 @@ Ax_right[i] * x + By_right[i] * y + C_right[i]
 | `signatureValid` | `server/src/keystore-signature.js::verifyKeystoreSignature` |
 | `nonceConsumed` | `server/src/server.js::verifyNonceForProof` |
 | `rootTrusted` | `server/src/key-attestation.js::verifyAndroidKeyAttestation` |
-

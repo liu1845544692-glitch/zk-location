@@ -731,22 +731,38 @@ internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
-// N.B. the name of the extension is very misleading, since it is 
-// rather `InterfaceTooLargeException`, caused by too many methods 
+// N.B. the name of the extension is very misleading, since it is
+// rather `InterfaceTooLargeException`, caused by too many methods
 // in the interface for large crates.
 //
 // By splitting the otherwise huge interface into two parts
-// * UniffiLib 
+// * UniffiLib
 // * IntegrityCheckingUniffiLib (this)
 // we allow for ~2x as many methods in the UniffiLib interface.
-// 
-// The `ffi_uniffi_contract_version` method and all checksum methods are put 
+//
+// The `ffi_uniffi_contract_version` method and all checksum methods are put
 // into `IntegrityCheckingUniffiLib` and these methods are called only once,
 // when the library is loaded.
 internal interface IntegrityCheckingUniffiLib : Library {
     // Integrity check functions only
-    fun uniffi_zk_location_checksum_func_generate_circom_proof(
+    fun uniffi_zk_location_checksum_func_compute_password_commitment(
+): Short
+fun uniffi_zk_location_checksum_func_generate_circom_proof(
 ): Short
 fun uniffi_zk_location_checksum_func_generate_halo2_proof(
 ): Short
@@ -756,7 +772,19 @@ fun uniffi_zk_location_checksum_func_generate_location_circuit_input(
 ): Short
 fun uniffi_zk_location_checksum_func_generate_noir_proof(
 ): Short
+fun uniffi_zk_location_checksum_func_generate_password_benchmark_input(
+): Short
+fun uniffi_zk_location_checksum_func_generate_password_circom_proof_diagnostic(
+): Short
+fun uniffi_zk_location_checksum_func_generate_password_len8_benchmark_input(
+): Short
+fun uniffi_zk_location_checksum_func_generate_password_registration_input(
+): Short
+fun uniffi_zk_location_checksum_func_generate_regex_record_circuit_input(
+): Short
 fun uniffi_zk_location_checksum_func_get_noir_verification_key(
+): Short
+fun uniffi_zk_location_checksum_func_hash_circom_proof_result(
 ): Short
 fun uniffi_zk_location_checksum_func_mopro_hello_world(
 ): Short
@@ -778,8 +806,8 @@ internal interface UniffiLib : Library {
         internal val INSTANCE: UniffiLib by lazy {
             val componentName = "zk_location"
             // For large crates we prevent `MethodTooLargeException` (see #2340)
-            // N.B. the name of the extension is very misleading, since it is 
-            // rather `InterfaceTooLargeException`, caused by too many methods 
+            // N.B. the name of the extension is very misleading, since it is
+            // rather `InterfaceTooLargeException`, caused by too many methods
             // in the interface for large crates.
             //
             // By splitting the otherwise huge interface into two parts
@@ -787,7 +815,7 @@ internal interface UniffiLib : Library {
             // * IntegrityCheckingUniffiLib
             // And all checksum methods are put into `IntegrityCheckingUniffiLib`
             // we allow for ~2x as many methods in the UniffiLib interface.
-            // 
+            //
             // Thus we first load the library with `loadIndirect` as `IntegrityCheckingUniffiLib`
             // so that we can (optionally!) call `uniffiCheckApiChecksums`...
             loadIndirect<IntegrityCheckingUniffiLib>(componentName)
@@ -802,42 +830,56 @@ internal interface UniffiLib : Library {
             // to trigger this issue, the performance impact is negligible, running on
             // a macOS M1 machine the `loadIndirect` call takes ~50ms.
             val lib = loadIndirect<UniffiLib>(componentName)
-            // No need to check the contract version and checksums, since 
+            // No need to check the contract version and checksums, since
             // we already did that with `IntegrityCheckingUniffiLib` above.
             // Loading of library with integrity check done.
             lib
         }
-        
+
     }
 
     // FFI functions
-    fun uniffi_zk_location_fn_func_generate_circom_proof(`zkeyPath`: RustBuffer.ByValue,`circuitInputs`: RustBuffer.ByValue,`proofLib`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    fun uniffi_zk_location_fn_func_compute_password_commitment(`password`: RustBuffer.ByValue,`salt`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
 ): RustBuffer.ByValue
-fun uniffi_zk_location_fn_func_generate_halo2_proof(`srsPath`: RustBuffer.ByValue,`pkPath`: RustBuffer.ByValue,`circuitInputs`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+fun uniffi_zk_location_fn_func_generate_circom_proof(`zkeyPath`: RustBuffer.ByValue,`circuitInputs`: RustBuffer.ByValue,`proofLib`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
 ): RustBuffer.ByValue
-fun uniffi_zk_location_fn_func_generate_location_cell_boundary(`lat`: Double,`lon`: Double,`resolution`: Byte,uniffi_out_err: UniffiRustCallStatus, 
+fun uniffi_zk_location_fn_func_generate_halo2_proof(`srsPath`: RustBuffer.ByValue,`pkPath`: RustBuffer.ByValue,`circuitInputs`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
 ): RustBuffer.ByValue
-fun uniffi_zk_location_fn_func_generate_location_circuit_input(`lat`: Double,`lon`: Double,`resolution`: Byte,uniffi_out_err: UniffiRustCallStatus, 
+fun uniffi_zk_location_fn_func_generate_location_cell_boundary(`lat`: Double,`lon`: Double,`resolution`: Byte,uniffi_out_err: UniffiRustCallStatus,
 ): RustBuffer.ByValue
-fun uniffi_zk_location_fn_func_generate_noir_proof(`circuitPath`: RustBuffer.ByValue,`srsPath`: RustBuffer.ByValue,`inputs`: RustBuffer.ByValue,`onChain`: Byte,`vk`: RustBuffer.ByValue,`lowMemoryMode`: Byte,uniffi_out_err: UniffiRustCallStatus, 
+fun uniffi_zk_location_fn_func_generate_location_circuit_input(`lat`: Double,`lon`: Double,`resolution`: Byte,uniffi_out_err: UniffiRustCallStatus,
 ): RustBuffer.ByValue
-fun uniffi_zk_location_fn_func_get_noir_verification_key(`circuitPath`: RustBuffer.ByValue,`srsPath`: RustBuffer.ByValue,`onChain`: Byte,`lowMemoryMode`: Byte,uniffi_out_err: UniffiRustCallStatus, 
+fun uniffi_zk_location_fn_func_generate_noir_proof(`circuitPath`: RustBuffer.ByValue,`srsPath`: RustBuffer.ByValue,`inputs`: RustBuffer.ByValue,`onChain`: Byte,`vk`: RustBuffer.ByValue,`lowMemoryMode`: Byte,uniffi_out_err: UniffiRustCallStatus,
 ): RustBuffer.ByValue
-fun uniffi_zk_location_fn_func_mopro_hello_world(uniffi_out_err: UniffiRustCallStatus, 
+fun uniffi_zk_location_fn_func_generate_password_benchmark_input(`passwordLength`: Byte,uniffi_out_err: UniffiRustCallStatus,
 ): RustBuffer.ByValue
-fun uniffi_zk_location_fn_func_verify_circom_proof(`zkeyPath`: RustBuffer.ByValue,`proofResult`: RustBuffer.ByValue,`proofLib`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+fun uniffi_zk_location_fn_func_generate_password_circom_proof_diagnostic(`zkeyPath`: RustBuffer.ByValue,`circuitInputs`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_zk_location_fn_func_generate_password_len8_benchmark_input(uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_zk_location_fn_func_generate_password_registration_input(`password`: RustBuffer.ByValue,`salt`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_zk_location_fn_func_generate_regex_record_circuit_input(`sourceIp`: RustBuffer.ByValue,`destinationIp`: RustBuffer.ByValue,`timestamp`: RustBuffer.ByValue,`port`: RustBuffer.ByValue,`trans`: RustBuffer.ByValue,`unit`: RustBuffer.ByValue,`protocol`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_zk_location_fn_func_get_noir_verification_key(`circuitPath`: RustBuffer.ByValue,`srsPath`: RustBuffer.ByValue,`onChain`: Byte,`lowMemoryMode`: Byte,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_zk_location_fn_func_hash_circom_proof_result(`proofResult`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_zk_location_fn_func_mopro_hello_world(uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+fun uniffi_zk_location_fn_func_verify_circom_proof(`zkeyPath`: RustBuffer.ByValue,`proofResult`: RustBuffer.ByValue,`proofLib`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
 ): Byte
-fun uniffi_zk_location_fn_func_verify_halo2_proof(`srsPath`: RustBuffer.ByValue,`vkPath`: RustBuffer.ByValue,`proof`: RustBuffer.ByValue,`publicInput`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+fun uniffi_zk_location_fn_func_verify_halo2_proof(`srsPath`: RustBuffer.ByValue,`vkPath`: RustBuffer.ByValue,`proof`: RustBuffer.ByValue,`publicInput`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
 ): Byte
-fun uniffi_zk_location_fn_func_verify_noir_proof(`circuitPath`: RustBuffer.ByValue,`proof`: RustBuffer.ByValue,`onChain`: Byte,`vk`: RustBuffer.ByValue,`lowMemoryMode`: Byte,uniffi_out_err: UniffiRustCallStatus, 
+fun uniffi_zk_location_fn_func_verify_noir_proof(`circuitPath`: RustBuffer.ByValue,`proof`: RustBuffer.ByValue,`onChain`: Byte,`vk`: RustBuffer.ByValue,`lowMemoryMode`: Byte,uniffi_out_err: UniffiRustCallStatus,
 ): Byte
-fun ffi_zk_location_rustbuffer_alloc(`size`: Long,uniffi_out_err: UniffiRustCallStatus, 
+fun ffi_zk_location_rustbuffer_alloc(`size`: Long,uniffi_out_err: UniffiRustCallStatus,
 ): RustBuffer.ByValue
-fun ffi_zk_location_rustbuffer_from_bytes(`bytes`: ForeignBytes.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+fun ffi_zk_location_rustbuffer_from_bytes(`bytes`: ForeignBytes.ByValue,uniffi_out_err: UniffiRustCallStatus,
 ): RustBuffer.ByValue
-fun ffi_zk_location_rustbuffer_free(`buf`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+fun ffi_zk_location_rustbuffer_free(`buf`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
 ): Unit
-fun ffi_zk_location_rustbuffer_reserve(`buf`: RustBuffer.ByValue,`additional`: Long,uniffi_out_err: UniffiRustCallStatus, 
+fun ffi_zk_location_rustbuffer_reserve(`buf`: RustBuffer.ByValue,`additional`: Long,uniffi_out_err: UniffiRustCallStatus,
 ): RustBuffer.ByValue
 fun ffi_zk_location_rust_future_poll_u8(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -845,7 +887,7 @@ fun ffi_zk_location_rust_future_cancel_u8(`handle`: Long,
 ): Unit
 fun ffi_zk_location_rust_future_free_u8(`handle`: Long,
 ): Unit
-fun ffi_zk_location_rust_future_complete_u8(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+fun ffi_zk_location_rust_future_complete_u8(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
 ): Byte
 fun ffi_zk_location_rust_future_poll_i8(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -853,7 +895,7 @@ fun ffi_zk_location_rust_future_cancel_i8(`handle`: Long,
 ): Unit
 fun ffi_zk_location_rust_future_free_i8(`handle`: Long,
 ): Unit
-fun ffi_zk_location_rust_future_complete_i8(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+fun ffi_zk_location_rust_future_complete_i8(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
 ): Byte
 fun ffi_zk_location_rust_future_poll_u16(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -861,7 +903,7 @@ fun ffi_zk_location_rust_future_cancel_u16(`handle`: Long,
 ): Unit
 fun ffi_zk_location_rust_future_free_u16(`handle`: Long,
 ): Unit
-fun ffi_zk_location_rust_future_complete_u16(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+fun ffi_zk_location_rust_future_complete_u16(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
 ): Short
 fun ffi_zk_location_rust_future_poll_i16(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -869,7 +911,7 @@ fun ffi_zk_location_rust_future_cancel_i16(`handle`: Long,
 ): Unit
 fun ffi_zk_location_rust_future_free_i16(`handle`: Long,
 ): Unit
-fun ffi_zk_location_rust_future_complete_i16(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+fun ffi_zk_location_rust_future_complete_i16(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
 ): Short
 fun ffi_zk_location_rust_future_poll_u32(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -877,7 +919,7 @@ fun ffi_zk_location_rust_future_cancel_u32(`handle`: Long,
 ): Unit
 fun ffi_zk_location_rust_future_free_u32(`handle`: Long,
 ): Unit
-fun ffi_zk_location_rust_future_complete_u32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+fun ffi_zk_location_rust_future_complete_u32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
 ): Int
 fun ffi_zk_location_rust_future_poll_i32(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -885,7 +927,7 @@ fun ffi_zk_location_rust_future_cancel_i32(`handle`: Long,
 ): Unit
 fun ffi_zk_location_rust_future_free_i32(`handle`: Long,
 ): Unit
-fun ffi_zk_location_rust_future_complete_i32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+fun ffi_zk_location_rust_future_complete_i32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
 ): Int
 fun ffi_zk_location_rust_future_poll_u64(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -893,7 +935,7 @@ fun ffi_zk_location_rust_future_cancel_u64(`handle`: Long,
 ): Unit
 fun ffi_zk_location_rust_future_free_u64(`handle`: Long,
 ): Unit
-fun ffi_zk_location_rust_future_complete_u64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+fun ffi_zk_location_rust_future_complete_u64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
 ): Long
 fun ffi_zk_location_rust_future_poll_i64(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -901,7 +943,7 @@ fun ffi_zk_location_rust_future_cancel_i64(`handle`: Long,
 ): Unit
 fun ffi_zk_location_rust_future_free_i64(`handle`: Long,
 ): Unit
-fun ffi_zk_location_rust_future_complete_i64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+fun ffi_zk_location_rust_future_complete_i64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
 ): Long
 fun ffi_zk_location_rust_future_poll_f32(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -909,7 +951,7 @@ fun ffi_zk_location_rust_future_cancel_f32(`handle`: Long,
 ): Unit
 fun ffi_zk_location_rust_future_free_f32(`handle`: Long,
 ): Unit
-fun ffi_zk_location_rust_future_complete_f32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+fun ffi_zk_location_rust_future_complete_f32(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
 ): Float
 fun ffi_zk_location_rust_future_poll_f64(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -917,7 +959,7 @@ fun ffi_zk_location_rust_future_cancel_f64(`handle`: Long,
 ): Unit
 fun ffi_zk_location_rust_future_free_f64(`handle`: Long,
 ): Unit
-fun ffi_zk_location_rust_future_complete_f64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+fun ffi_zk_location_rust_future_complete_f64(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
 ): Double
 fun ffi_zk_location_rust_future_poll_pointer(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -925,7 +967,7 @@ fun ffi_zk_location_rust_future_cancel_pointer(`handle`: Long,
 ): Unit
 fun ffi_zk_location_rust_future_free_pointer(`handle`: Long,
 ): Unit
-fun ffi_zk_location_rust_future_complete_pointer(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+fun ffi_zk_location_rust_future_complete_pointer(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
 ): Pointer
 fun ffi_zk_location_rust_future_poll_rust_buffer(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -933,7 +975,7 @@ fun ffi_zk_location_rust_future_cancel_rust_buffer(`handle`: Long,
 ): Unit
 fun ffi_zk_location_rust_future_free_rust_buffer(`handle`: Long,
 ): Unit
-fun ffi_zk_location_rust_future_complete_rust_buffer(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+fun ffi_zk_location_rust_future_complete_rust_buffer(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
 ): RustBuffer.ByValue
 fun ffi_zk_location_rust_future_poll_void(`handle`: Long,`callback`: UniffiRustFutureContinuationCallback,`callbackData`: Long,
 ): Unit
@@ -941,7 +983,7 @@ fun ffi_zk_location_rust_future_cancel_void(`handle`: Long,
 ): Unit
 fun ffi_zk_location_rust_future_free_void(`handle`: Long,
 ): Unit
-fun ffi_zk_location_rust_future_complete_void(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+fun ffi_zk_location_rust_future_complete_void(`handle`: Long,uniffi_out_err: UniffiRustCallStatus,
 ): Unit
 
 }
@@ -957,6 +999,9 @@ private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
 }
 @Suppress("UNUSED_PARAMETER")
 private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
+    if (lib.uniffi_zk_location_checksum_func_compute_password_commitment() != 38906.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_zk_location_checksum_func_generate_circom_proof() != 52868.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -972,7 +1017,25 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_zk_location_checksum_func_generate_noir_proof() != 34794.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_zk_location_checksum_func_generate_password_benchmark_input() != 13105.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_zk_location_checksum_func_generate_password_circom_proof_diagnostic() != 3163.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_zk_location_checksum_func_generate_password_len8_benchmark_input() != 60788.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_zk_location_checksum_func_generate_password_registration_input() != 57620.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_zk_location_checksum_func_generate_regex_record_circuit_input() != 33432.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_zk_location_checksum_func_get_noir_verification_key() != 43834.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_zk_location_checksum_func_hash_circom_proof_result() != 38777.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_zk_location_checksum_func_mopro_hello_world() != 30374.toShort()) {
@@ -1034,7 +1097,7 @@ inline fun <T : Disposable?, R> T.use(block: (T) -> R) =
         }
     }
 
-/** 
+/**
  * Used to instantiate an interface without an actual pointer, for fakes in tests, mostly.
  *
  * @suppress
@@ -1061,6 +1124,29 @@ public object FfiConverterUByte: FfiConverter<UByte, Byte> {
 
     override fun write(value: UByte, buf: ByteBuffer) {
         buf.put(value.toByte())
+    }
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterULong: FfiConverter<ULong, Long> {
+    override fun lift(value: Long): ULong {
+        return value.toULong()
+    }
+
+    override fun read(buf: ByteBuffer): ULong {
+        return lift(buf.getLong())
+    }
+
+    override fun lower(value: ULong): Long {
+        return value.toLong()
+    }
+
+    override fun allocationSize(value: ULong) = 8UL
+
+    override fun write(value: ULong, buf: ByteBuffer) {
+        buf.putLong(value.toLong())
     }
 }
 
@@ -1192,25 +1278,25 @@ data class CircomProof (
     /**
      * a：Groth16 proof 的 A 点。
      */
-    var `a`: G1, 
+    var `a`: G1,
     /**
      * b：Groth16 proof 的 B 点。
      */
-    var `b`: G2, 
+    var `b`: G2,
     /**
      * c：Groth16 proof 的 C 点。
      */
-    var `c`: G1, 
+    var `c`: G1,
     /**
      * protocol：proof 协议名称，当前应为 groth16。
      */
-    var `protocol`: kotlin.String, 
+    var `protocol`: kotlin.String,
     /**
      * curve：曲线名称，当前主链路使用 bn128/bn254。
      */
     var `curve`: kotlin.String
 ) {
-    
+
     companion object
 }
 
@@ -1251,13 +1337,13 @@ data class CircomProofResult (
     /**
      * proof：Groth16 proof 的 a/b/c 曲线点和协议元数据。
      */
-    var `proof`: CircomProof, 
+    var `proof`: CircomProof,
     /**
      * inputs：公开输入数组，第一个元素是 public_commitment。
      */
     var `inputs`: List<kotlin.String>
 ) {
-    
+
     companion object
 }
 
@@ -1289,17 +1375,17 @@ data class G1 (
     /**
      * x：G1 点的 x 坐标，十进制字符串格式。
      */
-    var `x`: kotlin.String, 
+    var `x`: kotlin.String,
     /**
      * y：G1 点的 y 坐标，十进制字符串格式。
      */
-    var `y`: kotlin.String, 
+    var `y`: kotlin.String,
     /**
      * z：G1 点的 z 坐标，十进制字符串格式。
      */
     var `z`: kotlin.String
 ) {
-    
+
     companion object
 }
 
@@ -1334,17 +1420,17 @@ data class G2 (
     /**
      * x：G2 点的 x 坐标二元数组，十进制字符串格式。
      */
-    var `x`: List<kotlin.String>, 
+    var `x`: List<kotlin.String>,
     /**
      * y：G2 点的 y 坐标二元数组，十进制字符串格式。
      */
-    var `y`: List<kotlin.String>, 
+    var `y`: List<kotlin.String>,
     /**
      * z：G2 点的 z 坐标二元数组，十进制字符串格式。
      */
     var `z`: List<kotlin.String>
 ) {
-    
+
     companion object
 }
 
@@ -1379,13 +1465,13 @@ data class Halo2ProofResult (
     /**
      * proof：占位 Halo2 proof bytes。
      */
-    var `proof`: kotlin.ByteArray, 
+    var `proof`: kotlin.ByteArray,
     /**
      * inputs：占位 Halo2 public inputs bytes。
      */
     var `inputs`: kotlin.ByteArray
 ) {
-    
+
     companion object
 }
 
@@ -1413,49 +1499,93 @@ public object FfiConverterTypeHalo2ProofResult: FfiConverterRustBuffer<Halo2Proo
 
 
 
+data class PasswordProofDiagnostic (
+    var `proofResult`: CircomProofResult,
+    var `nativeVerify`: kotlin.Boolean,
+    var `proofJsonBytes`: kotlin.ULong,
+    var `proofSha256`: kotlin.String,
+    var `zkeySha256`: kotlin.String
+) {
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypePasswordProofDiagnostic: FfiConverterRustBuffer<PasswordProofDiagnostic> {
+    override fun read(buf: ByteBuffer): PasswordProofDiagnostic {
+        return PasswordProofDiagnostic(
+            FfiConverterTypeCircomProofResult.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: PasswordProofDiagnostic) = (
+            FfiConverterTypeCircomProofResult.allocationSize(value.`proofResult`) +
+            FfiConverterBoolean.allocationSize(value.`nativeVerify`) +
+            FfiConverterULong.allocationSize(value.`proofJsonBytes`) +
+            FfiConverterString.allocationSize(value.`proofSha256`) +
+            FfiConverterString.allocationSize(value.`zkeySha256`)
+    )
+
+    override fun write(value: PasswordProofDiagnostic, buf: ByteBuffer) {
+            FfiConverterTypeCircomProofResult.write(value.`proofResult`, buf)
+            FfiConverterBoolean.write(value.`nativeVerify`, buf)
+            FfiConverterULong.write(value.`proofJsonBytes`, buf)
+            FfiConverterString.write(value.`proofSha256`, buf)
+            FfiConverterString.write(value.`zkeySha256`, buf)
+    }
+}
+
+
+
 
 
 sealed class MoproException: kotlin.Exception() {
-    
+
     /**
      * CircomError：Circom witness/proof/verify 或 H3 输入生成相关错误。
      */
     class CircomException(
-        
+
         val v1: kotlin.String
         ) : MoproException() {
         override val message
             get() = "v1=${ v1 }"
     }
-    
+
     /**
      * Halo2Error：保留给 Mopro 模板兼容，当前主链路未启用 Halo2。
      */
     class Halo2Exception(
-        
+
         val v1: kotlin.String
         ) : MoproException() {
         override val message
             get() = "v1=${ v1 }"
     }
-    
+
     /**
      * NoirError：保留给 Mopro 模板兼容，当前主链路未启用 Noir。
      */
     class NoirException(
-        
+
         val v1: kotlin.String
         ) : MoproException() {
         override val message
             get() = "v1=${ v1 }"
     }
-    
+
 
     companion object ErrorHandler : UniffiRustCallStatusErrorHandler<MoproException> {
         override fun lift(error_buf: RustBuffer.ByValue): MoproException = FfiConverterTypeMoproError.lift(error_buf)
     }
 
-    
+
 }
 
 /**
@@ -1463,7 +1593,7 @@ sealed class MoproException: kotlin.Exception() {
  */
 public object FfiConverterTypeMoproError : FfiConverterRustBuffer<MoproException> {
     override fun read(buf: ByteBuffer): MoproException {
-        
+
 
         return when(buf.getInt()) {
             1 -> MoproException.CircomException(
@@ -1525,7 +1655,7 @@ public object FfiConverterTypeMoproError : FfiConverterRustBuffer<MoproException
 
 
 enum class ProofLib {
-    
+
     /**
      * Arkworks：当前 Android 主链路使用的 proof backend。
      */
@@ -1655,6 +1785,16 @@ public object FfiConverterMapStringSequenceString: FfiConverterRustBuffer<Map<ko
         }
     }
 }
+    @Throws(MoproException::class) fun `computePasswordCommitment`(`password`: kotlin.String, `salt`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCallWithError(MoproException) { _status ->
+    UniffiLib.INSTANCE.uniffi_zk_location_fn_func_compute_password_commitment(
+        FfiConverterString.lower(`password`),FfiConverterString.lower(`salt`),_status)
+}
+    )
+    }
+
+
     @Throws(MoproException::class) fun `generateCircomProof`(`zkeyPath`: kotlin.String, `circuitInputs`: kotlin.String, `proofLib`: ProofLib): CircomProofResult {
             return FfiConverterTypeCircomProofResult.lift(
     uniffiRustCallWithError(MoproException) { _status ->
@@ -1663,7 +1803,7 @@ public object FfiConverterMapStringSequenceString: FfiConverterRustBuffer<Map<ko
 }
     )
     }
-    
+
 
         /**
          * 未启用 Halo2 时的占位生成函数，调用即报错。
@@ -1676,7 +1816,7 @@ public object FfiConverterMapStringSequenceString: FfiConverterRustBuffer<Map<ko
 }
     )
     }
-    
+
 
     @Throws(MoproException::class) fun `generateLocationCellBoundary`(`lat`: kotlin.Double, `lon`: kotlin.Double, `resolution`: kotlin.UByte): kotlin.String {
             return FfiConverterString.lift(
@@ -1686,7 +1826,7 @@ public object FfiConverterMapStringSequenceString: FfiConverterRustBuffer<Map<ko
 }
     )
     }
-    
+
 
     @Throws(MoproException::class) fun `generateLocationCircuitInput`(`lat`: kotlin.Double, `lon`: kotlin.Double, `resolution`: kotlin.UByte): kotlin.String {
             return FfiConverterString.lift(
@@ -1696,7 +1836,7 @@ public object FfiConverterMapStringSequenceString: FfiConverterRustBuffer<Map<ko
 }
     )
     }
-    
+
 
         /**
          * 未启用 Noir 时的占位生成函数，调用即报错。
@@ -1709,7 +1849,57 @@ public object FfiConverterMapStringSequenceString: FfiConverterRustBuffer<Map<ko
 }
     )
     }
-    
+
+
+    @Throws(MoproException::class) fun `generatePasswordBenchmarkInput`(`passwordLength`: kotlin.UByte): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCallWithError(MoproException) { _status ->
+    UniffiLib.INSTANCE.uniffi_zk_location_fn_func_generate_password_benchmark_input(
+        FfiConverterUByte.lower(`passwordLength`),_status)
+}
+    )
+    }
+
+
+    @Throws(MoproException::class) fun `generatePasswordCircomProofDiagnostic`(`zkeyPath`: kotlin.String, `circuitInputs`: kotlin.String): PasswordProofDiagnostic {
+            return FfiConverterTypePasswordProofDiagnostic.lift(
+    uniffiRustCallWithError(MoproException) { _status ->
+    UniffiLib.INSTANCE.uniffi_zk_location_fn_func_generate_password_circom_proof_diagnostic(
+        FfiConverterString.lower(`zkeyPath`),FfiConverterString.lower(`circuitInputs`),_status)
+}
+    )
+    }
+
+
+    @Throws(MoproException::class) fun `generatePasswordLen8BenchmarkInput`(): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCallWithError(MoproException) { _status ->
+    UniffiLib.INSTANCE.uniffi_zk_location_fn_func_generate_password_len8_benchmark_input(
+        _status)
+}
+    )
+    }
+
+
+    @Throws(MoproException::class) fun `generatePasswordRegistrationInput`(`password`: kotlin.String, `salt`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCallWithError(MoproException) { _status ->
+    UniffiLib.INSTANCE.uniffi_zk_location_fn_func_generate_password_registration_input(
+        FfiConverterString.lower(`password`),FfiConverterString.lower(`salt`),_status)
+}
+    )
+    }
+
+
+    @Throws(MoproException::class) fun `generateRegexRecordCircuitInput`(`sourceIp`: kotlin.String, `destinationIp`: kotlin.String, `timestamp`: kotlin.String, `port`: kotlin.String, `trans`: kotlin.String, `unit`: kotlin.String, `protocol`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCallWithError(MoproException) { _status ->
+    UniffiLib.INSTANCE.uniffi_zk_location_fn_func_generate_regex_record_circuit_input(
+        FfiConverterString.lower(`sourceIp`),FfiConverterString.lower(`destinationIp`),FfiConverterString.lower(`timestamp`),FfiConverterString.lower(`port`),FfiConverterString.lower(`trans`),FfiConverterString.lower(`unit`),FfiConverterString.lower(`protocol`),_status)
+}
+    )
+    }
+
 
         /**
          * 未启用 Noir 时的占位 verification key 生成函数，调用即报错。
@@ -1722,7 +1912,17 @@ public object FfiConverterMapStringSequenceString: FfiConverterRustBuffer<Map<ko
 }
     )
     }
-    
+
+
+    @Throws(MoproException::class) fun `hashCircomProofResult`(`proofResult`: CircomProofResult): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCallWithError(MoproException) { _status ->
+    UniffiLib.INSTANCE.uniffi_zk_location_fn_func_hash_circom_proof_result(
+        FfiConverterTypeCircomProofResult.lower(`proofResult`),_status)
+}
+    )
+    }
+
 
         /**
          * You can also customize the bindings by #[uniffi::export]
@@ -1735,7 +1935,7 @@ public object FfiConverterMapStringSequenceString: FfiConverterRustBuffer<Map<ko
 }
     )
     }
-    
+
 
     @Throws(MoproException::class) fun `verifyCircomProof`(`zkeyPath`: kotlin.String, `proofResult`: CircomProofResult, `proofLib`: ProofLib): kotlin.Boolean {
             return FfiConverterBoolean.lift(
@@ -1745,7 +1945,7 @@ public object FfiConverterMapStringSequenceString: FfiConverterRustBuffer<Map<ko
 }
     )
     }
-    
+
 
         /**
          * 未启用 Halo2 时的占位验证函数，调用即报错。
@@ -1758,7 +1958,7 @@ public object FfiConverterMapStringSequenceString: FfiConverterRustBuffer<Map<ko
 }
     )
     }
-    
+
 
         /**
          * 未启用 Noir 时的占位验证函数，调用即报错。
@@ -1771,6 +1971,6 @@ public object FfiConverterMapStringSequenceString: FfiConverterRustBuffer<Map<ko
 }
     )
     }
-    
+
 
 

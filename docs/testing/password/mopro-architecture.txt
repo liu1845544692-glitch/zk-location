@@ -1,0 +1,190 @@
+zk-location password/mopro architecture audit
+Date: 2026-06-26
+Scope: audit only. No business code, Android code, server code, circuits, zkeys, wasm, or password test artifacts were changed.
+
+Project layout found
+1. Android app module
+   - zk-location/android/app
+   - Compose UI entry: zk-location/android/app/src/main/java/com/example/moproapp/MainActivity.kt
+   - Main proof UI/workflow: zk-location/android/app/src/main/java/com/example/moproapp/LocationProofComponent.kt
+   - Regex JSON parser: zk-location/android/app/src/main/java/com/example/moproapp/RegexImportParser.kt
+   - Regex record input adapter: zk-location/android/app/src/main/java/com/example/moproapp/RegexRecordProof.kt
+   - Generated UniFFI Kotlin binding in app: zk-location/android/app/src/main/java/uniffi/mopro/mopro.kt
+   - Native libraries copied into app: zk-location/android/app/src/main/jniLibs/{arm64-v8a,x86_64}/libzk_location.so
+
+2. Rust/mopro crate
+   - zk-location/Cargo.toml
+   - zk-location/Config.toml
+   - zk-location/build.rs
+   - zk-location/src/lib.rs
+   - zk-location/src/circom.rs
+   - Current mopro CLI: /home/lyy/.cargo/bin/mopro, mopro-cli 0.3.5
+   - mopro-ffi locked version: 0.3.5
+
+3. mopro configuration
+   - zk-location/Config.toml
+   - build_mode = "release"
+   - target_adapters = ["circom"]
+   - target_platforms = ["android"]
+   - android targets:
+     - x86_64-linux-android
+     - aarch64-linux-android
+   - auto_update = false
+
+4. FFI/JNI entry points
+   - Rust exports are declared in zk-location/src/lib.rs and zk-location/src/circom.rs with #[cfg_attr(feature = "uniffi", uniffi::export)].
+   - mopro_ffi::app! initializes the UniFFI scaffolding.
+   - Generated Kotlin API includes:
+     - generateCircomProof(zkeyPath, circuitInputs, proofLib)
+     - verifyCircomProof(zkeyPath, proofResult, proofLib)
+     - generateLocationCircuitInput(lat, lon, resolution)
+     - generateLocationCellBoundary(lat, lon, resolution)
+     - generateRegexRecordCircuitInput(sourceIp, destinationIp, timestamp, port, trans, unit, protocol)
+   - JNI libraries currently present for arm64-v8a and x86_64.
+
+5. Existing proof implementation locations
+   - Rust proof wrapper:
+     - zk-location/src/circom.rs
+     - generate_circom_proof()
+     - verify_circom_proof()
+   - Rust circuit registration:
+     - zk-location/src/lib.rs
+     - set_circom_circuits! maps final zkey file names to witness functions.
+   - Android location proof:
+     - LocationProofComponent.kt calls generateLocationCircuitInput(), generateCircomProof(), and verifyCircomProof().
+   - Android single-field regex proofs:
+     - LocationProofComponent.kt builds msg arrays for regex_ip, regex_timestamp, port_trans, unit, and protocol_regex.
+   - Android regex_record proof:
+     - RegexRecordProof.kt parses strict JSON and calls generateRegexRecordCircuitInput().
+     - LocationProofComponent.kt calls generateCircomProof(regexRecordZkeyPath, recordInput.circuitInput, ProofLib.ARKWORKS).
+   - Server verification:
+     - server/src/proof-format.js verifies snarkjs/mopro proof shapes with snarkjs.groth16.verify() and verification_key.json.
+     - server/src/server.js loads areajudge and regex_record verification keys.
+     - server/src/arkworks-regex-verifier.js and zk-location/src/bin/verify_regex_record_arkworks.rs provide an Arkworks zkey-based fallback for regex_record.
+
+6. Current proving artifact locations
+   - Source/root artifacts:
+     - circuits/areajudge_final.zkey
+     - circuits/regex_ip_final.zkey
+     - circuits/regex_timestamp_final.zkey
+     - circuits/port_trans_final.zkey
+     - circuits/unit_final.zkey
+     - circuits/protocol_regex_final.zkey
+     - circuits/regex_record_final.zkey
+     - circuits/verification_key.json
+     - circuits/*_js/*.wasm are present in the repo, but not copied into Android assets.
+   - Android runtime assets:
+     - zk-location/android/app/src/main/assets/areajudge_final.zkey
+     - zk-location/android/app/src/main/assets/regex_ip_final.zkey
+     - zk-location/android/app/src/main/assets/regex_timestamp_final.zkey
+     - zk-location/android/app/src/main/assets/port_trans_final.zkey
+     - zk-location/android/app/src/main/assets/unit_final.zkey
+     - zk-location/android/app/src/main/assets/protocol_regex_final.zkey
+     - zk-location/android/app/src/main/assets/regex_record_final.zkey
+   - Test-vectors for desktop Rust tests:
+     - zk-location/test-vectors/circom/areajudge_final.zkey
+     - zk-location/test-vectors/circom/regex_ip_final.zkey
+     - zk-location/test-vectors/circom/witnesscalc/*.cpp/*.dat
+
+Version information recorded
+1. Rust toolchain
+   - rustc 1.91.0-nightly (565a9ca63 2025-09-10)
+   - cargo 1.91.0-nightly (761c4658d 2025-09-04)
+
+2. Circom/Groth16 backend
+   - circom compiler 2.2.3
+   - circom-prover 0.1.4
+   - ark-groth16 0.5.0
+   - ark-bn254 0.5.0
+   - Android proving path uses ProofLib.ARKWORKS in Kotlin.
+   - Rapidsnark remains in the enum and is used as a regex_record local fallback in Kotlin, but the main Android calls use Arkworks.
+
+3. mopro
+   - CLI: mopro-cli 0.3.5
+   - Rust crate: mopro-ffi 0.3.5
+   - Generated Android bindings under MoproAndroidBindings and app/src/main/java/uniffi.
+
+4. Witness generation crates
+   - rust-witness 0.1.6
+   - witnesscalc-adapter 0.1.7, patched to ../vendor/witnesscalc-adapter
+
+5. Android build stack
+   - Android Gradle Plugin: 8.5.1 from zk-location/android/gradle/libs.versions.toml
+   - Gradle wrapper: 8.7 from zk-location/android/gradle/wrapper/gradle-wrapper.properties
+   - Kotlin plugin: 1.9.0
+   - compileSdk/targetSdk: 34
+   - minSdk: 24
+   - NDK configured by script: /home/lyy/Android/Sdk/ndk/28.2.13676358
+   - Installed NDK directories observed:
+     - /home/lyy/Android/Sdk/ndk/27.0.12077973
+     - /home/lyy/Android/Sdk/ndk/28.2.13676358
+   - Current ABI support:
+     - arm64-v8a from aarch64-linux-android
+     - x86_64 from x86_64-linux-android
+
+Current proof flow
+1. Android/Kotlin
+   - LocationProofComponent.kt obtains zkey paths with getFilePathFromAssets().
+   - getFilePathFromAssets() in MainActivity.kt copies an asset stream to context.filesDir and returns a normal filesystem path.
+   - Proof operations run in startProofWorker() with a 64 MiB Java thread stack.
+
+2. Rust/FFI
+   - Kotlin calls generated UniFFI functions in uniffi.mopro.
+   - generateCircomProof() enters Rust generate_circom_proof().
+   - verifyCircomProof() enters Rust verify_circom_proof().
+
+3. Input construction
+   - Location input:
+     - Kotlin calls generateLocationCircuitInput().
+     - Rust h3_converter::generate_circuit_input() computes H3 bounds and Poseidon(x, y, salt).
+     - normalize_rust_witness_input() wraps scalar strings into arrays for rust_witness compatibility.
+   - Single-field regex input:
+     - Kotlin directly builds {"msg":[ascii bytes]} in LocationProofComponent.kt.
+   - Regex record input:
+     - Kotlin parses JSON in RegexRecordProof.kt.
+     - Rust h3_converter::generate_regex_record_circuit_input() normalizes fields, packs bytes, computes Poseidon(10), and returns a nested circuitInput object.
+
+4. Witness generation
+   - Android target:
+     - build.rs copies repo wasm files into OUT_DIR/android-witness-wasm and calls rust_witness::transpile::transpile_wasm().
+     - src/lib.rs registers rust_witness generated functions:
+       - areajudge_witness
+       - regexip_witness
+       - regextimestamp_witness
+       - porttrans_witness
+       - unit_witness
+       - protocolregex_witness
+       - regexrecord_witness
+   - Non-Android target:
+     - build.rs calls witnesscalc_adapter::build_and_link("./test-vectors/circom/witnesscalc").
+     - src/lib.rs currently registers only areajudge and regex_ip for desktop non-Android.
+
+5. Proof generation
+   - generate_circom_proof() extracts the zkey file name from the passed path.
+   - It uses circom_get(file_name) from set_circom_circuits! to select the registered witness function.
+   - It calls CircomProver::prove(proof_lib, witness_fn, circuit_inputs, zkey_path).
+   - The result is converted to UniFFI-friendly CircomProofResult with proof a/b/c and public inputs.
+
+6. Local verify
+   - Android calls verifyCircomProof(zkeyPath, proofResult, ProofLib.ARKWORKS).
+   - Rust verify_circom_proof() calls CircomProver::verify(proof_lib, proof, zkey_path).
+   - Therefore Android local verification currently also uses the zkey path, not verification_key.json.
+
+Password artifacts considered
+The reproducible inputs and runtime artifacts now live in this repository:
+1. circuits/password_policy_commitment_main.circom and circuits/password_policy_generated/
+   - circuit source, fixed generated DFA modules, and the pinned regex helper
+2. h3-converter/password-dfa/
+   - the five DFA graph JSON files embedded by Rust input generation
+3. circuits/password_policy_commitment_js/password_policy_commitment_main.wasm
+   - size: 3,445,714 bytes
+   - SHA-256: 01d84d96c3d199d5e3e5ea41086c988f40835ac5974b674a78396c7079c0c62c
+4. zk-location/android/app/src/main/assets/password_policy_commitment_final.zkey
+   - size: 140,303,535 bytes; tracked with Git LFS
+5. server/keys/password_policy_commitment_verification_key.json
+   - size: 2,932 bytes
+6. R1CS is reproducible from the committed source and package lock, but is not duplicated in Git.
+7. Circuit summary:
+   - constraints: 278,176
+   - public inputs: 1
+   - only public input: passwordCommitment

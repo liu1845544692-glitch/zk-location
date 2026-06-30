@@ -73,6 +73,7 @@ class JsonAuthStore {
       // id: 用户唯一标识，以 "usr_" 前缀开头
       id: `usr_${this.randomBytes(12).toString("base64url")}`,
       username: normalizedUsername,
+      authMethod: "legacy_password",
       // passwordSalt: 此用户专用的密码盐值
       passwordSalt: salt,
       // passwordHash: scrypt 哈希后的密码（base64url 编码的 32 字节）
@@ -105,7 +106,13 @@ class JsonAuthStore {
 
     // user: 在数据库中按用户名查找的用户记录
     const user = this.db.users.find((candidate) => candidate.username === normalizedUsername);
-    if (!user || user.passwordHash !== hashPassword(password, user.passwordSalt)) {
+    if (
+      !user ||
+      user.authMethod === "password_commitment" ||
+      typeof user.passwordSalt !== "string" ||
+      typeof user.passwordHash !== "string" ||
+      user.passwordHash !== hashPassword(password, user.passwordSalt)
+    ) {
       throw new AuthError(401, "Invalid username or password");
     }
 
@@ -118,6 +125,60 @@ class JsonAuthStore {
     return {
       user: publicUser(user),
       session,
+    };
+  }
+
+  // Create an auth identity backed by the separately verified password commitment.
+  // No plaintext password, password salt, or password hash is stored here.
+  registerPasswordUser(userId) {
+    const username = normalizePasswordUserId(userId);
+    this.pruneExpired();
+    if (this.db.users.some((user) => user.username === username)) {
+      throw new AuthError(409, "Username already exists");
+    }
+    const user = this.createPasswordUser(username);
+    this.db.users.push(user);
+    this.save();
+    return publicUser(user);
+  }
+
+  // A commitment is verified by /password/login before this method is called.
+  // createIfMissing supports password registrations created before auth unification.
+  loginPasswordUser(userId, { createIfMissing = false } = {}) {
+    const username = normalizePasswordUserId(userId);
+    this.pruneExpired();
+    let user = this.db.users.find((candidate) => candidate.username === username);
+    if (!user && createIfMissing) {
+      user = this.createPasswordUser(username);
+      this.db.users.push(user);
+    }
+    if (!user || user.authMethod !== "password_commitment") {
+      throw new AuthError(401, "Invalid username or password");
+    }
+    this.clearActiveKeyForNewLogin(user);
+    const session = this.issueSessionForUser(user.id);
+    this.save();
+    return { user: publicUser(user), session };
+  }
+
+  removePasswordUser(userId) {
+    const username = normalizePasswordUserId(userId);
+    const user = this.db.users.find((candidate) => candidate.username === username);
+    if (!user || user.authMethod !== "password_commitment") return false;
+    this.db.users = this.db.users.filter((candidate) => candidate.id !== user.id);
+    this.db.sessions = this.db.sessions.filter((session) => session.userId !== user.id);
+    this.save();
+    return true;
+  }
+
+  createPasswordUser(username) {
+    return {
+      id: `usr_${this.randomBytes(12).toString("base64url")}`,
+      username,
+      authMethod: "password_commitment",
+      createdAt: new Date(this.now()).toISOString(),
+      keys: [],
+      activeKeyId: null,
     };
   }
 
@@ -491,6 +552,16 @@ function normalizeUsername(username) {
     throw new AuthError(400, "username must be 3-64 chars: letters, numbers, _, @, ., -");
   }
   return normalized;
+}
+
+function normalizePasswordUserId(userId) {
+  if (typeof userId !== "string" || !/^[A-Za-z0-9_.@:-]{3,128}$/.test(userId)) {
+    throw new AuthError(
+      400,
+      "userId must be 3-128 characters: letters, numbers, _, ., @, :, or -"
+    );
+  }
+  return userId.toLowerCase();
 }
 
 // ---- 验证密码长度（8-256 字符）----

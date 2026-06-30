@@ -172,8 +172,33 @@ test("verify-proof ignores client-supplied public key and uses registered key", 
   assert.equal(response.body.nonceConsumed, true);
 });
 
+test("verify-regex-proof verifies explicit record proof without active key", async (t) => {
+  const app = await startTestServer(t, { verifyPayload: verifyRegexPayloadForTest });
+  const registered = await postJson(app, "/auth/register", {
+    username: "regex-user",
+    password: "correct-password",
+  });
+  assert.equal(registered.status, 201);
+
+  const payload = {
+    proof: validProofFixture.proof,
+    inputs: ["42"],
+    publicSignals: ["42"],
+  };
+  const response = await postJson(app, "/verify-regex-proof", payload, registered.body.token);
+  assert.equal(response.status, 200);
+  assert.equal(response.body.valid, true);
+  assert.equal(response.body.proofValid, true);
+  assert.equal(response.body.publicInputCount, 1);
+  assert.equal(response.body.recordCommitment, "42");
+
+  const unauthenticated = await postJson(app, "/verify-regex-proof", payload);
+  assert.equal(unauthenticated.status, 401);
+  assert.equal(unauthenticated.body.code, "REGEX_PROOF_VERIFY_FAILED");
+});
+
 /** 启动隔离测试服务端，并在测试结束时关闭。 */
-async function startTestServer(t) {
+async function startTestServer(t, options = {}) {
   // tempDir：本测试独立的 auth/log 临时目录。
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "zk-location-verify-attacks-"));
   // authStore：关闭 attestation 要求，只聚焦 verify-proof 攻击面。
@@ -192,7 +217,7 @@ async function startTestServer(t) {
     authStore,
     interactionLogger,
     nonceTtlMs: 60_000,
-    verifyPayload: verifyPayloadForAttackTest,
+    verifyPayload: options.verifyPayload || verifyPayloadForAttackTest,
   });
 
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -207,6 +232,17 @@ async function startTestServer(t) {
     authStore,
     interactionLogger,
     server,
+  };
+}
+
+async function verifyRegexPayloadForTest(_verificationKey, payload) {
+  const publicSignals = payload.inputs || payload.publicSignals || payload.public_inputs || [];
+  const valid = publicSignals.length === 1 && publicSignals[0].toString() === "42";
+  return {
+    valid,
+    publicInputCount: publicSignals.length,
+    acceptedFormat: valid ? "test-regex-fixture" : null,
+    attempts: [{ format: "test-regex-fixture", valid }],
   };
 }
 

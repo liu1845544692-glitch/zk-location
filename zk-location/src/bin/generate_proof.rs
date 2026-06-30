@@ -25,8 +25,8 @@ fn main() {
     let resolution: u8 = 8;
 
     // 1. 生成电路输入
-    let circuit_inputs =
-        h3_converter::generate_circuit_input(lat, lon, resolution).expect("h3-converter input 生成失败");
+    let circuit_inputs = h3_converter::generate_circuit_input(lat, lon, resolution)
+        .expect("h3-converter input 生成失败");
 
     // input_path：保存电路输入 JSON 的文件名。
     let input_path = format!("{OUT_DIR}/input_{}_{}_r{}.json", lat, lon, resolution);
@@ -35,12 +35,8 @@ fn main() {
 
     // 2. 生成 proof
     // result：proof 生成结果，包含 proof 和 public inputs。
-    let result = generate_circom_proof(
-        ZKEY_PATH.to_string(),
-        circuit_inputs,
-        ProofLib::Arkworks,
-    )
-    .expect("Proof 生成失败");
+    let result = generate_circom_proof(ZKEY_PATH.to_string(), circuit_inputs, ProofLib::Arkworks)
+        .expect("Proof 生成失败");
 
     // 3. 将 proof 序列化为 JSON 并保存
     // proof_json：方便服务端或外部工具读取的 proof JSON。
@@ -68,8 +64,7 @@ fn main() {
     // proof_path：保存 proof JSON 的文件名。
     let proof_path = format!("{OUT_DIR}/proof_{}_{}_r{}.json", lat, lon, resolution);
     // proof_str：格式化后的 proof JSON 字符串。
-    let proof_str =
-        serde_json::to_string_pretty(&proof_json).expect("proof 序列化失败");
+    let proof_str = serde_json::to_string_pretty(&proof_json).expect("proof 序列化失败");
     fs::write(&proof_path, &proof_str).expect("写入 proof 文件失败");
     println!("Proof 已保存: {proof_path}");
 }

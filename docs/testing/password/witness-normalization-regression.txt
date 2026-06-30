@@ -1,0 +1,66 @@
+Witness normalization regression report
+=======================================
+
+Result: PASS
+Date: 2026-06-27
+
+Impact scope
+------------
+- location calls normalize_rust_witness_input.
+- password calls normalize_rust_witness_input but len16/len32 were not tested.
+- source IP, destination IP, timestamp, port, trans, unit, and protocol do not
+  call the shared normalizer. Their Kotlin builders already emit msg as a
+  decimal string array accepted directly as HashMap<String, Vec<String>>.
+- unsupported object, nested array, boolean, and null values are explicit
+  errors. Fields are not silently dropped.
+
+Desktop Arkworks regression
+----------------------------
+- location: PASS, immediate verify true, 37 public inputs, first input equals
+  public_commitment.
+- source IP: PASS, proof 76 ms, verify 50 ms, public [1].
+- destination IP: PASS, proof 79 ms, verify 47 ms, public [1].
+- timestamp: PASS, proof 355 ms, verify 70 ms, public [1].
+- port: PASS, proof 39 ms, verify 46 ms, public [1].
+- trans: PASS, proof 41 ms, verify 46 ms, public [1].
+- unit: PASS, proof 32 ms, verify 46 ms, public [1].
+- protocol: PASS, proof 109 ms, verify 49 ms, public [1].
+- all proof/public-input FFI shape roundtrips were equal.
+
+Android Arkworks regression
+----------------------------
+- location: PASS, proof 85 ms, verify 13 ms, 37 public inputs, commitment match.
+- source IP: PASS, proof 29 ms, verify 9 ms, public [1].
+- destination IP: PASS, proof 29 ms, verify 9 ms, public [1].
+- timestamp: PASS, proof 92 ms, verify 10 ms, public [1].
+- port: PASS, proof 16 ms, verify 10 ms, public [1].
+- trans: PASS, proof 13 ms, verify 10 ms, public [1].
+- unit: PASS, proof 13 ms, verify 8 ms, public [1].
+- protocol: PASS, proof 40 ms, verify 8 ms, public [1].
+
+Failure encountered
+-------------------
+The first debug runner attempt incorrectly required location to have exactly one
+public input. The location circuit intentionally has 37 public inputs: commitment
+plus six arrays of six public boundary coefficients. Location proof/verify had
+already succeeded. The diagnostic assertion was corrected to check count 37 and
+the first commitment; no proof implementation was changed.
+
+Safety
+------
+- OOM: no
+- application process kill: no
+- crash: no
+- native crash: no
+- Rust panic: no
+- Rapidsnark: not used
+
+Artifacts
+---------
+- APK: zk-location/android/app/build/outputs/apk/debug/app-debug.apk
+- APK size: 228218602 bytes
+- APK SHA-256: 5e6c7092d2149e7e7d01fd4088cecb24f354d3094c0ae4257f96f38a64971eae
+- Android records: device-test/witness-regression-20260627-1345/
+- Android logcat: device-test/witness-regression-20260627-1345/logcat.txt
+- Commands: diagnostics/witness_normalization_regression/commands.txt
+- Modified files: diagnostics/witness_normalization_regression/modified_files.txt

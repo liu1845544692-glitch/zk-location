@@ -1,0 +1,18 @@
+Result: PASSED
+Test date: 2026-06-27
+Device: HUAWEI EBG-AN00, Android 12 / API 31, arm64-v8a
+
+Fixed len8 result:
+- proof generated: true
+- public signals: 1
+- public commitment matched desktop vector: true
+- native immediate Arkworks verify: true
+- proof SHA-256 before/after UniFFI matched: true
+- Kotlin/UI Arkworks verify: true
+- original proof with commitment + 1: false
+- original proof restored with original commitment: true
+- OOM, process kill, native crash, Rust panic: none
+
+The prior verify=false was caused by numeric Circom JSON inputs being silently
+dropped by rust-witness input parsing. Inputs are now normalized to decimal
+string arrays before witness generation.

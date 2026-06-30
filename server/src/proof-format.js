@@ -44,8 +44,11 @@ function normalizePublicSignals(payload) {
 //   → 直接可用，返回单一候选
 // mopro 格式: { a: {x,y,z}, b: {x:[a,b],y:[a,b],z:[a,b]}, c: {x,y,z} }
 //   → 需要转换为 snarkjs 格式
-//   → 额外生成一个 G2 坐标交换的备选（mopro_g2_swapped），
-//     因为不同库对 G2 点的 x, y 分量顺序可能不一致
+//   → 额外生成 G2 备选：
+//      1. Fp2 pair 内部元素交换（同时覆盖 z 坐标是否也需要交换）
+//      2. G2 x/y 坐标交换
+//      3. 两者同时交换
+//     因为不同库对 G2 点的 Fp2 元素和坐标顺序可能不一致。
 function proofCandidates(payload) {
   // proof: 从请求中提取 proof 对象，兼容直接传 proof 或 mopro 的 proofResult.proof
   const proof = payload.proof ?? payload.proofResult?.proof;
@@ -87,7 +90,9 @@ function proofCandidates(payload) {
     curve,
   };
 
-  // 返回两个候选：标准格式 + G2 x/y 交换格式
+  // 返回多个候选：标准格式、Fp2 pair 内部交换、G2 x/y 坐标交换、两者同时交换。
+  // 旧 mopro 位置 proof 多数 z 为 [1,0]；regex_record 真机 proof 可能带非仿射 z，
+  // 因此 pair 交换候选必须覆盖 z 坐标，否则 snarkjs 服务端验证会失败。
   return [
     {
       format: "mopro",
@@ -97,10 +102,38 @@ function proofCandidates(payload) {
       },
     },
     {
-      format: "mopro_g2_swapped",
+      format: "mopro_g2_pair_swapped",
       proof: {
         ...base,
         pi_b: [swapPair(b.x), swapPair(b.y), b.z],
+      },
+    },
+    {
+      format: "mopro_g2_pair_swapped_with_z",
+      proof: {
+        ...base,
+        pi_b: [swapPair(b.x), swapPair(b.y), swapPair(b.z)],
+      },
+    },
+    {
+      format: "mopro_g2_xy_swapped",
+      proof: {
+        ...base,
+        pi_b: [b.y, b.x, b.z],
+      },
+    },
+    {
+      format: "mopro_g2_xy_pair_swapped",
+      proof: {
+        ...base,
+        pi_b: [swapPair(b.y), swapPair(b.x), b.z],
+      },
+    },
+    {
+      format: "mopro_g2_xy_pair_swapped_with_z",
+      proof: {
+        ...base,
+        pi_b: [swapPair(b.y), swapPair(b.x), swapPair(b.z)],
       },
     },
   ];

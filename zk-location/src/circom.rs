@@ -21,6 +21,9 @@ use circom_prover::{
     CircomProver,
 };
 use num_bigint::BigUint;
+use sha2::{Digest, Sha256};
+use std::fs::File;
+use std::io::Read;
 use std::str::FromStr;
 
 //
@@ -33,6 +36,16 @@ pub struct CircomProofResult {
     pub proof: CircomProof,
     /// inputs：公开输入数组，第一个元素是 public_commitment。
     pub inputs: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+pub struct PasswordProofDiagnostic {
+    pub proof_result: CircomProofResult,
+    pub native_verify: bool,
+    pub proof_json_bytes: u64,
+    pub proof_sha256: String,
+    pub zkey_sha256: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -219,6 +232,86 @@ pub fn generate_circom_proof(
         proof,
         inputs: pub_inputs,
     })
+}
+
+#[cfg_attr(feature = "uniffi", uniffi::export)]
+pub fn generate_password_circom_proof_diagnostic(
+    zkey_path: String,
+    circuit_inputs: String,
+) -> Result<PasswordProofDiagnostic, MoproError> {
+    let name = std::path::Path::new(&zkey_path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| MoproError::CircomError("failed to parse zkey file name".to_string()))?;
+    if name != "password_policy_commitment_final.zkey" {
+        return Err(MoproError::CircomError(format!(
+            "unexpected password zkey: {name}"
+        )));
+    }
+    let witness_fn = crate::circom_get(name)
+        .ok_or_else(|| MoproError::CircomError(format!("Unknown ZKEY: {name}")))?;
+    let generated = CircomProver::prove(
+        CircomProverProofLib::Arkworks,
+        witness_fn,
+        circuit_inputs,
+        zkey_path.clone(),
+    )
+    .map_err(|e| MoproError::CircomError(format!("Generate Proof error: {e}")))?;
+
+    let proof_json = serde_json::to_vec(&generated)
+        .map_err(|e| MoproError::CircomError(format!("proof serialization failed: {e}")))?;
+    let proof_sha256 = sha256_bytes(&proof_json);
+    let proof_json_bytes = proof_json.len() as u64;
+    let native_verify = CircomProver::verify(
+        CircomProverProofLib::Arkworks,
+        generated.clone(),
+        zkey_path.clone(),
+    )
+    .map_err(|e| MoproError::CircomError(format!("Native verification error: {e}")))?;
+    let zkey_sha256 = sha256_file(&zkey_path)?;
+
+    Ok(PasswordProofDiagnostic {
+        proof_result: CircomProofResult {
+            proof: generated.proof.into(),
+            inputs: generated.pub_inputs.into(),
+        },
+        native_verify,
+        proof_json_bytes,
+        proof_sha256,
+        zkey_sha256,
+    })
+}
+
+#[cfg_attr(feature = "uniffi", uniffi::export)]
+pub fn hash_circom_proof_result(proof_result: CircomProofResult) -> Result<String, MoproError> {
+    let internal = circom_prover::prover::CircomProof {
+        proof: proof_result.proof.into(),
+        pub_inputs: proof_result.inputs.into(),
+    };
+    let json = serde_json::to_vec(&internal)
+        .map_err(|e| MoproError::CircomError(format!("proof serialization failed: {e}")))?;
+    Ok(sha256_bytes(&json))
+}
+
+fn sha256_bytes(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn sha256_file(path: &str) -> Result<String, MoproError> {
+    let mut file = File::open(path)
+        .map_err(|e| MoproError::CircomError(format!("failed to open zkey for SHA-256: {e}")))?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0u8; 1024 * 1024];
+    loop {
+        let count = file
+            .read(&mut buffer)
+            .map_err(|e| MoproError::CircomError(format!("failed to hash zkey: {e}")))?;
+        if count == 0 {
+            break;
+        }
+        digest.update(&buffer[..count]);
+    }
+    Ok(format!("{:x}", digest.finalize()))
 }
 
 #[cfg_attr(feature = "uniffi", uniffi::export)]

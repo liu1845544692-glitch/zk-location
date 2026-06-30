@@ -18,7 +18,7 @@ test("accepts mopro proof result shape", () => {
   const payload = {
     proof: {
       a: { x: "1", y: "2", z: "1" },
-      b: { x: ["3", "4"], y: ["5", "6"], z: ["1", "0"] },
+      b: { x: ["3", "4"], y: ["5", "6"], z: ["11", "12"] },
       c: { x: "7", y: "8", z: "1" },
       protocol: "groth16",
       curve: "bn128",
@@ -30,13 +30,43 @@ test("accepts mopro proof result shape", () => {
 
   // candidates：服务端尝试验证的 proof 候选格式列表。
   const candidates = proofCandidates(payload);
-  assert.equal(candidates.length, 2);
+  assert.equal(candidates.length, 6);
   assert.equal(candidates[0].format, "mopro");
   assert.deepEqual(candidates[0].proof.pi_a, ["1", "2", "1"]);
   assert.deepEqual(candidates[0].proof.pi_b, [
     ["3", "4"],
     ["5", "6"],
-    ["1", "0"],
+    ["11", "12"],
+  ]);
+  assert.equal(candidates[1].format, "mopro_g2_pair_swapped");
+  assert.deepEqual(candidates[1].proof.pi_b, [
+    ["4", "3"],
+    ["6", "5"],
+    ["11", "12"],
+  ]);
+  assert.equal(candidates[2].format, "mopro_g2_pair_swapped_with_z");
+  assert.deepEqual(candidates[2].proof.pi_b, [
+    ["4", "3"],
+    ["6", "5"],
+    ["12", "11"],
+  ]);
+  assert.equal(candidates[3].format, "mopro_g2_xy_swapped");
+  assert.deepEqual(candidates[3].proof.pi_b, [
+    ["5", "6"],
+    ["3", "4"],
+    ["11", "12"],
+  ]);
+  assert.equal(candidates[4].format, "mopro_g2_xy_pair_swapped");
+  assert.deepEqual(candidates[4].proof.pi_b, [
+    ["6", "5"],
+    ["4", "3"],
+    ["11", "12"],
+  ]);
+  assert.equal(candidates[5].format, "mopro_g2_xy_pair_swapped_with_z");
+  assert.deepEqual(candidates[5].proof.pi_b, [
+    ["6", "5"],
+    ["4", "3"],
+    ["12", "11"],
   ]);
 });
 

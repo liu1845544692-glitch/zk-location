@@ -1,0 +1,4 @@
+case | password | salt | chunk0_match | chunk1_match | commitment_match
+len8 | Aa1!bbbb | 1008 | true | true | true
+len16 | Aa1!bbbbbbbbbbbb | 1016 | true | true | true
+len32 | Aa1!bbbbbbbbbbbbbbbbbbbbbbbbbbbb | 1032 | true | true | true

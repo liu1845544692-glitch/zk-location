@@ -1,0 +1,69 @@
+Password login final result
+===========================
+
+Endpoint: POST /password/login
+Request fields: userId, passwordCommitment
+Proof generated: false
+Password sent/persisted: false
+Salt sent: false
+
+Device
+------
+HUAWEI EBG-AN00, Android 12 / API 31, arm64-v8a
+User ID: pwd-test-20260627-222114
+Registered commitment:
+13693940417314820178939160679535645246900772969026069298266182188455278063402
+
+Correct password
+----------------
+Salt decrypt: true
+Computed commitment matches registration: true
+HTTP status: 200
+Login success: true
+Commitment calculation: 37 ms
+Network: 35 ms
+Total: 108 ms
+
+Wrong password
+--------------
+Computed commitment differs: true
+HTTP status: 401
+Code: INVALID_CREDENTIALS
+
+Unknown userId
+--------------
+HTTP status: 401
+Code: INVALID_CREDENTIALS
+Response is indistinguishable from wrong password.
+
+Persistence and runtime
+-----------------------
+Database SHA-256 before/after:
+5b647973641fbf7b3e7cc3808270003e6aba7e695dfc49926f902371957c0663
+Server restart login: HTTP 200
+Peak PSS: 67322 kB
+Peak RSS: 141984 kB
+Post-test PSS: 64568 kB
+Post-test RSS: 140140 kB
+OOM/ANR/app crash/native crash/Rust panic: none
+
+Tests
+-----
+Rust: 36 passed (21 h3-converter, 15 zk-location)
+Server: 58 passed, including 10 password login tests
+Android JVM: 43 passed, including 10 password login tests
+Total: 137 passed, 0 failed
+
+APK
+---
+Path: /home/lyy/projects/zk-location/zk-location/android/app/build/outputs/apk/debug/app-debug.apk
+Size: 228232058 bytes
+SHA-256: 6769dbba6c05e0ec03478295e74a3a08c8c756f29c9819ad5e76f9d8fc42dc1e
+
+Logs
+----
+Server: /home/lyy/projects/zk-location/device-test/password-login-20260627-225722/server.log
+Android: /home/lyy/projects/zk-location/device-test/password-login-20260627-225722/logcat.txt
+Records: /home/lyy/projects/zk-location/device-test/password-login-20260627-225722
+
+Conclusion: PASS (same-device prototype only; no replay protection)

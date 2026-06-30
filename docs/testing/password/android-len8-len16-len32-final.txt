@@ -1,0 +1,64 @@
+Password Android matrix final report
+====================================
+
+Result: PASS
+Device: HUAWEI EBG-AN00, Android 12 / API 31, arm64-v8a
+Backend: Arkworks only
+
+len8 run1
+- zkey copied: true, 330 ms
+- input/proof/verify/negative/total: 30/6112/224/158/7210 ms
+- proof size: 848 bytes
+- public commitment match, native verify, FFI hash, positive, negative=false,
+  restored=true: PASS
+- peak PSS/RSS: 471966/542920 KB; post-proof PSS: 337777 KB
+
+len8 run2
+- zkey reused: true, 241 ms
+- input/proof/verify/negative/total: 41/6759/184/196/7828 ms
+- proof size: 851 bytes
+- all proof/public/verification checks: PASS
+- peak PSS/RSS: 552410/611664 KB; post-proof PSS: 326451 KB
+
+len8 run3
+- zkey reused: true, 239 ms
+- input/proof/verify/negative/total: 16/6758/201/192/7763 ms
+- proof size: 850 bytes
+- all proof/public/verification checks: PASS
+- peak PSS/RSS: 655059/729008 KB; post-proof PSS: 351085 KB
+
+len16
+- password: Aa1!bbbbbbbbbbbb; salt: 1016; passwordLength: 16
+- commitment: 11186526345370232576299025816516415797176095098189845436645573564034254234122
+- zkey reused: true, 256 ms
+- input/proof/verify/negative/total: 76/6775/253/192/7834 ms
+- proof size: 850 bytes
+- public signal match, native verify, FFI hash, positive=true,
+  commitment+1=false, restored=true: PASS
+- peak PSS/RSS: 447216/521464 KB; post-proof PSS: 332596 KB
+
+len32
+- password: Aa1!bbbbbbbbbbbbbbbbbbbbbbbbbbbb; salt: 1032; passwordLength: 32
+- commitment: 15382327428467064216367910183421615477503124169574981342044370954693189986584
+- zkey reused: true, 232 ms
+- input/proof/verify/negative/total: 64/6766/237/194/7839 ms
+- proof size: 851 bytes
+- public signal match, native verify, FFI hash, positive=true,
+  commitment+1=false, restored=true: PASS
+- peak PSS/RSS: 496101/566780 KB; post-proof PSS: 323793 KB
+
+Stability and safety
+- len8 post-proof PSS did not increase monotonically.
+- application storage: 140308395 bytes; zkey exists once in filesDir and once
+  in the installed APK.
+- OOM/ANR/crash/native crash/Rust panic/system kill: none.
+
+Verification
+- zk-location cargo test --offline: 13 passed.
+- h3-converter cargo test --offline: 17 passed.
+- Android testDebugUnitTest: PASS.
+- Android assembleDebug: PASS.
+
+Records
+- device-test/password-matrix-20260627-1427/
+- logcat: device-test/password-matrix-20260627-1427/logcat.txt

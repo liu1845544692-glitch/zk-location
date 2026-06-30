@@ -20,6 +20,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
@@ -58,14 +59,53 @@ class MainActivity : ComponentActivity() {
     // savedInstanceState：Android 生命周期恢复状态，本页面不额外保存 Activity 状态。
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val autoRunPasswordRegister = intent?.getBooleanExtra("password_register_auto_test", false) == true
+        val passwordRegisterUserId = intent?.getStringExtra("password_register_user_id").orEmpty()
+        val passwordRegisterServerUrl = intent?.getStringExtra("password_register_server_url").orEmpty()
+        val passwordRegisterNegativeTest =
+            intent?.getBooleanExtra("password_register_negative_test", false) == true
+        val passwordRegisterRecoveryCheck =
+            intent?.getBooleanExtra("password_register_recovery_check", false) == true
+        val autoRunPasswordLogin = intent?.getBooleanExtra("password_login_auto_test", false) == true
+        val passwordLoginUserId = intent?.getStringExtra("password_login_user_id").orEmpty()
+        val passwordLoginServerUrl = intent?.getStringExtra("password_login_server_url").orEmpty()
         setContent {
-            MainScreen()
+            MainScreen(
+                autoRunPasswordRegister = autoRunPasswordRegister,
+                passwordRegisterUserId = passwordRegisterUserId,
+                passwordRegisterServerUrl = passwordRegisterServerUrl,
+                passwordRegisterNegativeTest = passwordRegisterNegativeTest,
+                passwordRegisterRecoveryCheck = passwordRegisterRecoveryCheck,
+                autoRunPasswordLogin = autoRunPasswordLogin,
+                passwordLoginUserId = passwordLoginUserId,
+                passwordLoginServerUrl = passwordLoginServerUrl
+            )
         }
     }
 }
 
 @Composable
-fun MainScreen() {
+fun MainScreen(
+    autoRunPasswordRegister: Boolean = false,
+    passwordRegisterUserId: String = "",
+    passwordRegisterServerUrl: String = "",
+    passwordRegisterNegativeTest: Boolean = false,
+    passwordRegisterRecoveryCheck: Boolean = false,
+    autoRunPasswordLogin: Boolean = false,
+    passwordLoginUserId: String = "",
+    passwordLoginServerUrl: String = ""
+) {
+    var selectedScreen by remember {
+        mutableStateOf(
+            when {
+                autoRunPasswordRegister || passwordRegisterRecoveryCheck -> "register"
+                else -> "login"
+            }
+        )
+    }
+    var loginUserId by remember { mutableStateOf(passwordLoginUserId) }
+    var loginServerUrl by remember { mutableStateOf(passwordLoginServerUrl) }
+    var authSession by remember { mutableStateOf<PasswordAuthSession?>(null) }
     // colorScheme：主客户端使用的简约浅色配色，覆盖默认 Material 颜色。
     val colorScheme = lightColorScheme(
         primary = Color(0xFF0F766E),
@@ -85,12 +125,53 @@ fun MainScreen() {
             modifier = Modifier.fillMaxSize(),
             containerColor = MaterialTheme.colorScheme.background
         ) { innerPadding ->
-            // innerPadding：Scaffold 为系统栏和内容区预留的安全边距。
-            LocationProofComponent(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(innerPadding)
-            )
+            when (selectedScreen) {
+                "register" -> PasswordRegisterScreen(
+                    autoTest = autoRunPasswordRegister,
+                    initialUserId = passwordRegisterUserId.ifBlank { loginUserId },
+                    initialServerUrl = passwordRegisterServerUrl.ifBlank { loginServerUrl },
+                    runNegativeTest = passwordRegisterNegativeTest,
+                    recoveryCheck = passwordRegisterRecoveryCheck,
+                    onBackToLogin = { userId, serverUrl ->
+                        loginUserId = userId
+                        loginServerUrl = serverUrl
+                        selectedScreen = "login"
+                    },
+                    modifier = Modifier.fillMaxSize().padding(innerPadding)
+                )
+                "location" -> {
+                    val session = authSession
+                    if (session == null) {
+                        selectedScreen = "login"
+                    } else {
+                        LocationProofComponent(
+                            initialAuthToken = session.token,
+                            initialAuthUsername = session.userId,
+                            initialServerUrl = session.serverUrl,
+                            onSessionEnded = {
+                                authSession = null
+                                selectedScreen = "login"
+                            },
+                            modifier = Modifier.fillMaxSize().padding(innerPadding)
+                        )
+                    }
+                }
+                else -> PasswordLoginScreen(
+                    autoTest = autoRunPasswordLogin,
+                    initialUserId = loginUserId,
+                    initialServerUrl = loginServerUrl,
+                    onLoginSuccess = { session ->
+                        authSession = session
+                        selectedScreen = "location"
+                    },
+                    onRegisterRequested = { userId, serverUrl ->
+                        loginUserId = userId
+                        loginServerUrl = serverUrl
+                        selectedScreen = "register"
+                    },
+                    modifier = Modifier.fillMaxSize().padding(innerPadding)
+                )
+            }
         }
     }
 }

@@ -17,4 +17,6 @@ getrandom = "0.2"
 h3o = "0.7"
 light-poseidon = "0.4"
 num-bigint = "0.4"
+serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+zk-regex-compiler = { git = "https://github.com/zkemail/zk-regex.git", rev = "acdc2c10f7d248d9695dfaa99716dfec2f6aa6cd" }

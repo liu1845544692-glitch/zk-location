@@ -1,0 +1,53 @@
+Date: 2026-06-27
+
+Root cause
+----------
+The password input builder emits numeric JSON values for inHaystack, all DFA
+state arrays, matchStart, and matchLength. normalize_rust_witness_input only
+wrapped string scalars and left numeric values unchanged.
+
+circom-prover 0.1.4 rust-witness::json_to_hashmap accepts only arrays and then
+keeps only string elements. Numeric arrays therefore became empty vectors and
+numeric scalar fields were omitted. salt and passwordCommitment remained valid
+because they were already strings. This explains the observed combination:
+correct public commitment, successful Groth16 proof construction, and failed
+verification. Arkworks proof construction does not itself enforce witness
+satisfaction; verification detects the invalid witness-derived proof.
+
+Desktop control
+---------------
+Using the same Cargo.lock, circom-prover 0.1.4 Arkworks backend, zkey, and the
+existing Aa1!bbbb / salt 1008 len8 witness:
+- witness elements: 266389
+- public inputs: 1
+- public input 0 matched the expected commitment
+- immediate verify: true
+- internal proof -> FFI-shaped strings -> internal proof equality: true
+- public inputs roundtrip equality: true
+- roundtrip verify: true
+
+Fix
+---
+- Convert every supported Circom scalar to a one-element decimal string array.
+- Convert every numeric/string array element to a decimal string.
+- Reject unsupported JSON value types instead of silently dropping them.
+- Add a password-specific Arkworks diagnostic call that verifies the original
+  native proof before conversion and reports proof/zkey SHA-256.
+- Hash the proof again after UniFFI reconstruction and require an exact match.
+- Remove the temporary Rapidsnark fallback; all tests use Arkworks.
+
+Fixed Android result
+--------------------
+- native immediate verify: true
+- native proof JSON bytes: 921
+- native proof SHA-256:
+  c695c31ecc1dc5bd0b4b349eec3b254ef61a8897344a06f03f2ead7a13c52876
+- post-UniFFI proof SHA-256: identical
+- public input count/value after UniFFI: identical
+- Kotlin Arkworks positive verify: true
+- unchanged proof with commitment + 1: false
+- restored original commitment: true
+- OOM/crash/panic: none
+
+Evidence directory:
+device-test/password-len8-arkworks-fix-20260627-1315/

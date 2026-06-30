@@ -1,0 +1,78 @@
+Password server registration final result
+=========================================
+
+Endpoint: POST /password/register
+Persistence: atomic JSON file, one unique record per userId
+Password vkey SHA-256: 900d31512ec711ce31c717e631846648c837c764199646142eb5cfa9cde13a13
+
+Device test
+-----------
+Device: HUAWEI EBG-AN00, Android 12 / API 31, arm64-v8a
+User ID: pwd-test-20260627-222114
+Commitment: 13693940417314820178939160679535645246900772969026069298266182188455278063402
+Public signal count: 1
+Public signal matches commitment: true
+Native Arkworks verify: true
+Kotlin Arkworks verify: true
+FFI proof hash match: true
+HTTP status: 201
+Server snarkjs proof verify: true
+Commitment persisted: true
+Server restart registration count: 1
+App restart encrypted salt recovery: true
+
+Negative test
+-------------
+Original proof reused: true
+Only request passwordCommitment changed by +1: true
+HTTP status: 400
+Error code: COMMITMENT_MISMATCH
+Database record count after rejection: 1
+Original record overwritten: false
+
+Performance
+-----------
+Proof time: 6231 ms
+Kotlin verify time: 225 ms
+Network time: 400 ms
+Server verify time: 248.242445 ms
+Total time: 7531 ms
+Proof result JSON size: 853 bytes
+Peak PSS: 439168 kB
+Peak RSS: 514524 kB
+Post-test PSS: 127654 kB
+Post-test RSS: 210680 kB
+
+Security
+--------
+Plaintext password persisted/logged: false
+Salt sent to server: false
+Salt persisted locally before server success: false
+Local salt encryption: AndroidKeyStore AES-GCM
+OOM: false
+ANR: false
+App crash: false
+Native crash: false
+Rust panic: false
+
+Tests
+-----
+Server: 48 passed, including 13 password registration tests
+Android JVM: 33 passed, including 5 registration API tests
+h3-converter Rust: 18 passed
+zk-location Rust: 14 passed
+Total: 113 passed, 0 failed
+
+APK
+---
+Path: /home/lyy/projects/zk-location/zk-location/android/app/build/outputs/apk/debug/app-debug.apk
+Size: 228227266 bytes
+SHA-256: 84f1ccfa07a75fa84f602357434a3e2d2b41beed11bac8cdf67c00c2680e6788
+
+Records
+-------
+Test directory: /home/lyy/projects/zk-location/device-test/password-server-register-20260627-222114
+Server log: /home/lyy/projects/zk-location/device-test/password-server-register-20260627-222114/server.log
+Android logcat: /home/lyy/projects/zk-location/device-test/password-server-register-20260627-222114/logcat.txt
+
+Conclusion: PASS

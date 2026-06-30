@@ -1,5 +1,7 @@
 {
   "dependencies": {
-    "circomlib": "^2.0.5"
+    "@zk-email/circuits": "6.3.3",
+    "@zk-email/zk-regex-circom": "2.3.2",
+    "circomlib": "2.0.5"
   }
 }

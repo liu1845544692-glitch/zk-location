@@ -99,6 +99,13 @@ function summarizeVerifyResponse(response) {
     valid: response.valid,
     proofValid: response.proofValid ?? response.valid,
     acceptedFormat: response.acceptedFormat ?? null,
+    attempts: Array.isArray(response.attempts)
+      ? response.attempts.map((attempt) => ({
+          format: attempt.format,
+          valid: attempt.valid,
+          error: attempt.error ?? null,
+        }))
+      : null,
     publicInputCount: response.publicInputCount ?? null,
     signature: response.signature
       ? {

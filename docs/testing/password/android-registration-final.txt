@@ -1,0 +1,66 @@
+Password registration test result
+=================================
+
+Unit tests
+----------
+- h3-converter: 18 passed, 0 failed.
+- zk-location: 14 passed, 0 failed.
+- Android JVM: 28 passed, 0 failed.
+- PasswordRegistrationPolicyTest: 12 passed, 0 failed.
+- Covered valid len8/len16/len32, length 7/33, missing character classes,
+  unsupported character, confirmation mismatch, distinct secure salts, field
+  range, distinct commitments, and normalized public input construction.
+
+Real device
+-----------
+- Device: HUAWEI EBG-AN00
+- Android: 12 / API 31
+- ABI: arm64-v8a
+- Input: Aa1!bbbb with matching confirmation (not emitted to app logs)
+- Salt: randomly generated; plaintext value was not recorded
+- Commitment: 21159883698650984999372331067564733855403224444992369395968445671029675528498
+- Public signals: 1
+- Public signal matches commitment: true
+- Native immediate Arkworks verify: true
+- UniFFI proof hash match: true
+- Kotlin Arkworks verify: true
+- Proof time (includes native immediate diagnostic): 6322 ms
+- Kotlin verify time: 239 ms
+- Total time: 7051 ms
+- Proof JSON size: 848 bytes
+- Peak TOTAL PSS: 473006 kB
+- Peak TOTAL RSS: 607972 kB
+- Post-proof TOTAL PSS: 205374 kB
+- Post-proof TOTAL RSS: 342432 kB
+- Private app storage: 142946 kB (du allocation units)
+- Encrypted salt storage version: 1
+- Plaintext password found in encrypted salt record: no
+- OOM / ANR / crash / native crash / Rust panic: none observed
+
+Artifact integrity
+------------------
+- zkey size: 140303535 bytes
+- source/device zkey SHA-256:
+  8bee38b7a43668f9df5b67a5d17e8f27e6419cdee98dfa912d17d4b1e8ee9156
+- APK zkey compression: Stored (0%)
+- Proof-tested APK SHA-256 before navigation-only layout correction:
+  9e710b87f16e370a0ea469b44e733866b18af14eda9a4f435d12831739ac2f7e
+- Final APK SHA-256 after navigation-only layout correction:
+  1a8e955ef105c1427326e831a460bcd4f37887414d96093e3dfdb0b5501bd689
+- Final APK size: 228227266 bytes
+- The navigation-corrected APK was installed and the registration page was
+  smoke-checked without starting a second proof. The final APK additionally
+  prevents password fields from entering saved-instance state; this security
+  change was rebuilt, unit-tested, and installed without starting another proof.
+
+Collection note
+---------------
+The first collector version returned exit code 2 because Windows ADB did not
+propagate the remote test command status as expected. The app result file was
+present and complete, and all post-test artifacts were collected. The polling
+logic was corrected to compare an explicit READY marker. The proof was not run
+again.
+
+Records
+-------
+/home/lyy/projects/zk-location/device-test/password-register-20260627-145149
