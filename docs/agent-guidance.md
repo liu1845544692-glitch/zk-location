@@ -6,10 +6,20 @@ This document contains the shared project rules for Claude Code, Codex, and thei
 
 * Repository root: `/home/lyy/projects/zk-location`
 * Stable branch: `main`
-* Stable baseline commit: `c17a5455f2a88589a53be2c21c663ed357e6cb9e`
 * Remote: `git@github.com:liu1845544692-glitch/zk-location.git`
 
-Always inspect the current Git state before working. The baseline commit may no longer be the latest commit.
+## Repository baseline
+
+Use the current `main` HEAD as the audit baseline.
+
+Before starting an audit, record it with:
+
+```bash
+git rev-parse main
+git rev-parse HEAD
+```
+
+All independent audit worktrees must be created from the same recorded commit.
 
 ## Git safety
 
