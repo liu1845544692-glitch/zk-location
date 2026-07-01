@@ -665,14 +665,22 @@ function createVerifierServer(options = {}) {
         // payload: 客户端上传的完整 JSON 请求体
         payload = await readJsonBody(req);
 
-        // 3. Groth16 proof 验证
-        // proofResult: snarkjs proof 验证结果 { valid, publicInputCount, acceptedFormat, attempts }
-        const proofResult = await verifyProofPayload(verificationKey, payload);
-
         // publicSignals: ZK 电路 37 个公开输入数组
         // publicSignals[0] 是 public_commitment
         // 作为 ZK proof 和 TEE 签名之间的绑定点
         const publicSignals = normalizePublicSignals(payload);
+
+        // M-01: 强制 Location proof 公开输入数量恰好为 37，
+        // 防止尾部零截断或其他数量错误绕过验证。
+        if (publicSignals.length !== 37) {
+          throw new Error(
+            `Location proof requires exactly 37 public inputs, got ${publicSignals.length}`
+          );
+        }
+
+        // 3. Groth16 proof 验证
+        // proofResult: snarkjs proof 验证结果 { valid, publicInputCount, acceptedFormat, attempts }
+        const proofResult = await verifyProofPayload(verificationKey, payload);
 
         // 4. Keystore 签名验证 + commitment 绑定检查
         // 使用服务端存储的 active key 公钥（忽略请求中携带的 publicKey，
