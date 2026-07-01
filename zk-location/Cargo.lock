@@ -2629,6 +2629,10 @@ name = "zk-location"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "ark-bn254",
+ "ark-ec",
+ "ark-ff",
+ "ark-serialize",
  "circom-prover",
  "h3-converter",
  "mopro-ffi",

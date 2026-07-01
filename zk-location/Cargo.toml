@@ -33,6 +33,10 @@ circom-prover = { version = "0.1", features = ["witnesscalc"] }
 rust-witness  = "0.1"
 witnesscalc-adapter = "0.1"
 num-bigint    = "0.4.0"
+ark-bn254 = "0.5.0"
+ark-ec = "0.5.0"
+ark-ff = "0.5.0"
+ark-serialize = "0.5.0"
 h3-converter = { path = "../h3-converter" }
 serde_json = "1.0.94"
 sha2 = "0.10"
