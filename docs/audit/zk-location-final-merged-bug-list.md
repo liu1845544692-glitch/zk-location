@@ -246,3 +246,20 @@ ID:
 遗留问题:
 状态: Open / In Progress / Fixed / Rejected / Deferred
 ```
+
+---
+
+## 10. 状态记录
+
+### M-01
+
+```text
+ID: M-01
+原修复 commit: 96d120bad4dcb25b831c34a483e705a7e036c7f9
+main 合并 commit: f6ef60dcb2a3c9d914f7dfd55a5256ec5f7bb7a6
+修复者: Claude
+审查者: Codex
+审查结论: PASS
+测试结果: M-01 定向测试 11/11 通过；Server 76/76 全部通过
+状态: Fixed
+```
