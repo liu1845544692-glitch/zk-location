@@ -262,3 +262,57 @@ ID: M-02
       决定的公开 H3 六边形内，不存在服务端授权区域要求。
 状态: Rejected
 ```
+
+### M-03
+
+```text
+ID: M-03
+状态: Fixed
+修复者: Claude
+独立审查者: Codex
+审查结论: PASS WITH FOLLOW-UP
+原修复 commit: b7bf6674b0a1c74bd1c1a5bf05cce6012d53cdd0
+main 合并 commit: 7941ec62dcca55fb6466a802f63399c700476249
+
+核心结果:
+- malformed G1/G2 和错误数组长度受控拒绝；
+- 域内非曲线 G1/G2 受控拒绝；
+- G2 错误子群点受控拒绝；
+- 相关生产入口不再 panic 或 unwind 穿过 FFI；
+- 合法 Location/Regex proof 无回归。
+
+非阻断 follow-up:
+- F-M03-01：增加 G2 错误子群生产入口回归测试
+- F-M03-02：明确或规范外部 proof 的 z 字段语义
+- F-M03-03：评估移除非必要的 ark-ec 直接依赖
+
+这些是非阻断 follow-up，不影响 M-03 的 Fixed 状态。
+```
+
+### M-05
+
+```text
+ID: M-05
+状态: Fixed
+修复者: Claude
+独立审查者: Codex
+审查结论: PASS
+原修复 commit: b7bf6674b0a1c74bd1c1a5bf05cce6012d53cdd0
+main 合并 commit: 7941ec62dcca55fb6466a802f63399c700476249
+
+核心结果:
+- 外部 public signal 采用唯一规范的 BN254 scalar 十进制编码；
+- q、q+1、真实 x+q、符号、前导零和非十进制输入均拒绝；
+- Location 和 Regex 的真实 x+q 动态复现均已阻止；
+- 合法 proof 无回归。
+```
+
+### M-04
+
+```text
+ID: M-04
+状态: Confirmed Bug / Pending
+说明: 缺失、截断或损坏 zkey 导致 panic。
+      旧 commit 6ed4c8ff9dea0fa60fb3c8413cc515938b149153 未经独立审查，不得合并。
+      将在 Codex 对 M-03/M-05 给出 PASS 后单独重做和审查。
+```
