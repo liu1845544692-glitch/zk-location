@@ -44,27 +44,26 @@
 | ID | 严重度 | 模块 | 合并后问题 | 主要证据 | 修复批次 |
 |---|---|---|---|---|---|
 | M-01 | High | Server / Location | Location 必须恰好包含 37 个公开输入；35/36 项尾部截断仍可被 Groth16 verifier 接受 | 两边复核均确认；真实 `snarkjs` 验证矩阵中 35/36/37 为 true | Batch 1 |
-| M-02 | High | Server / Location | 36 个区域边界参数未绑定到服务端授权区域，客户端可自选待证明区域 | 两边均确认服务端只验证 proof 和 commitment，不授权 `publicSignals[1..36]` | Batch 2 |
-| M-03 | Medium | Rust / Android FFI | 非数字 proof 坐标、短 G2、非法 public input、非曲线点可触发 native panic | Codex Rust 最小复现；Claude 静态确认 `unwrap` 和越界路径 | Batch 3 |
-| M-04 | Medium | Rust / Android | 缺失、空、截断或损坏 zkey 可触发依赖 panic | Codex 对 missing/empty/corrupt zkey 动态复现 | Batch 3 |
-| M-05 | Medium | Rust / Regex verifier | 外部 public signal 未做规范域元素校验，`x + q` 会被约简为与 `x` 相同的 field element | Codex 临时 Groth16 proof 动态复现 | Batch 3 |
-| M-09 | High | Server logging | interaction logger 发生 ENOSPC/EACCES 等写入错误时可终止 Node 进程 | Codex 子进程故障注入复现 exit 1；Claude确认无异常隔离 | Batch 4 |
-| M-10 | High | Server persistence | AuthStore 非原子写入、保存失败无内存回滚、损坏 JSON 导致启动失败 | 两边动态复现；Codex额外复现 ghost state | Batch 4 |
-| M-11 | Medium | Server diagnostics | 未认证诊断接口泄露 userId、nonce、证书链、IP、绝对路径和运行指标 | Codex真实 handler复现；默认监听 `0.0.0.0` 且 CORS `*` | Batch 4 |
-| M-12 | Low | Server file permissions | `auth.json` 和 `interactions.jsonl` 在 umask 0022 下默认创建为 0644 | Codex动态 `stat` 复现 | Batch 4 |
-| M-13 | Low | Android Password Register | Password Register 早期失败路径不清除 password 和 confirmation | 两边代码路径确认；仅成功路径执行清理 | Batch 6 |
-| P-03 | Medium | Server logging | `limit=1` 仍同步读取、split 整个日志文件，导致延迟和内存线性增长 | Codex 64 MiB 日志动态复现 | Batch 5 |
-| P-04 | Medium | Server registration | 密码注册跨 AuthStore 和 PasswordRegistrationStore 存在单进程崩溃半事务状态 | Codex在两次持久化之间强制退出，复现两库不一致 | Batch 5 |
-| P-05 | Medium | Server nonce | 未认证 `/nonce` 无速率和容量上限，TTL 内 Map 和内存可线性增长 | Codex 50,000 次请求动态复现 | Batch 5 |
-| P-08 | Low | Server authentication | 用户存在性可由 login-parameters 状态码和 legacy scrypt 时序可靠区分 | Codex状态码和计时动态复现 | Batch 5 |
-| P-09 | Low | Server signature protocol | canonical Keystore payload 未强制版本、字段唯一性和未知字段拒绝 | Codex使用可信 P-256 key 动态复现错误版本和重复字段仍被接受 | Batch 5 |
+| M-03 | Medium | Rust / Android FFI | 非数字 proof 坐标、短 G2、非法 public input、非曲线点可触发 native panic | Codex Rust 最小复现；Claude 静态确认 `unwrap` 和越界路径 | Batch 2 |
+| M-04 | Medium | Rust / Android | 缺失、空、截断或损坏 zkey 可触发依赖 panic | Codex 对 missing/empty/corrupt zkey 动态复现 | Batch 2 |
+| M-05 | Medium | Rust / Regex verifier | 外部 public signal 未做规范域元素校验，`x + q` 会被约简为与 `x` 相同的 field element | Codex 临时 Groth16 proof 动态复现 | Batch 2 |
+| M-09 | High | Server logging | interaction logger 发生 ENOSPC/EACCES 等写入错误时可终止 Node 进程 | Codex 子进程故障注入复现 exit 1；Claude确认无异常隔离 | Batch 3 |
+| M-10 | High | Server persistence | AuthStore 非原子写入、保存失败无内存回滚、损坏 JSON 导致启动失败 | 两边动态复现；Codex额外复现 ghost state | Batch 3 |
+| M-11 | Medium | Server diagnostics | 未认证诊断接口泄露 userId、nonce、证书链、IP、绝对路径和运行指标 | Codex真实 handler复现；默认监听 `0.0.0.0` 且 CORS `*` | Batch 3 |
+| M-12 | Low | Server file permissions | `auth.json` 和 `interactions.jsonl` 在 umask 0022 下默认创建为 0644 | Codex动态 `stat` 复现 | Batch 3 |
+| M-13 | Low | Android Password Register | Password Register 早期失败路径不清除 password 和 confirmation | 两边代码路径确认；仅成功路径执行清理 | Batch 5 |
+| P-03 | Medium | Server logging | `limit=1` 仍同步读取、split 整个日志文件，导致延迟和内存线性增长 | Codex 64 MiB 日志动态复现 | Batch 4 |
+| P-04 | Medium | Server registration | 密码注册跨 AuthStore 和 PasswordRegistrationStore 存在单进程崩溃半事务状态 | Codex在两次持久化之间强制退出，复现两库不一致 | Batch 4 |
+| P-05 | Medium | Server nonce | 未认证 `/nonce` 无速率和容量上限，TTL 内 Map 和内存可线性增长 | Codex 50,000 次请求动态复现 | Batch 4 |
+| P-08 | Low | Server authentication | 用户存在性可由 login-parameters 状态码和 legacy scrypt 时序可靠区分 | Codex状态码和计时动态复现 | Batch 4 |
+| P-09 | Low | Server signature protocol | canonical Keystore payload 未强制版本、字段唯一性和未知字段拒绝 | Codex使用可信 P-256 key 动态复现错误版本和重复字段仍被接受 | Batch 4 |
 
 ### 2.2 工程质量问题
 
 | ID | 严重度 | 模块 | 问题 | 主要证据 | 修复批次 |
 |---|---|---|---|---|---|
-| M-14 | Low | Server tests | 干净 checkout 执行完整 Server 测试时依赖未跟踪 fixture，导致 64/65 | 两边复核均得到 1 项失败；Codex定位到 ignored runtime fixture | Batch 7 |
-| M-15 | Low | Rust formatting | `h3-converter cargo fmt --check` 存在一处格式差异 | Codex分别检查两个 crate；`zk-location` 通过，`h3-converter` 失败 | Batch 7 |
+| M-14 | Low | Server tests | 干净 checkout 执行完整 Server 测试时依赖未跟踪 fixture，导致 64/65 | 两边复核均得到 1 项失败；Codex定位到 ignored runtime fixture | Batch 6 |
+| M-15 | Low | Rust formatting | `h3-converter cargo fmt --check` 存在一处格式差异 | Codex分别检查两个 crate；`zk-location` 通过，`h3-converter` 失败 | Batch 6 |
 
 ---
 
@@ -114,6 +113,7 @@
 8. 已绑定用户省略 TEE 字段不能绕过服务端 active key 验证；
 9. FFI 类型 `derive Default` 本身不是独立 Bug；
 10. 仅在未来代码加入 `await` 后才可能出现的 TOCTOU 不作为当前 Bug。
+11. M-02：Location 的 36 个区域边界参数未绑定到服务端授权区域。经项目负责人确认，当前协议设计目标是证明私有位置位于由当前位置和 resolution 决定的公开 H3 六边形内，不存在服务端预先授权区域的要求。客户端提交公开六边形参数属于预期行为，不构成缺陷。
 
 ---
 
@@ -125,19 +125,7 @@
 
 要求单独 commit，先通过 Codex 独立复核。
 
-### Batch 2：Location 区域授权设计与实现
-
-- M-02
-
-先输出设计，再由项目负责人决定：
-
-- 单一固定授权区域；或
-- `regionId -> 36 项边界` 映射；或
-- nonce/challenge 绑定 region。
-
-不得由 Agent 未经确认自行扩大协议。
-
-### Batch 3：Rust 和 field 输入边界
+### Batch 2：Rust 和 field 输入边界
 
 - M-03
 - M-04
@@ -149,7 +137,7 @@
 2. zkey 错误隔离；
 3. canonical BN254 scalar gate。
 
-### Batch 4：Server 可用性、持久化和数据暴露
+### Batch 3：Server 可用性、持久化和数据暴露
 
 - M-09
 - M-10
@@ -158,7 +146,7 @@
 
 M-10 建议独立 commit；诊断接口和文件权限可分别提交。
 
-### Batch 5：Server 资源、事务和协议加固
+### Batch 4：Server 资源、事务和协议加固
 
 - P-03
 - P-04
@@ -166,14 +154,14 @@ M-10 建议独立 commit；诊断接口和文件权限可分别提交。
 - P-08
 - P-09
 
-### Batch 6：Android 修复
+### Batch 5：Android 修复
 
 - M-13
 - 评估并尽可能修复 M-06、M-07、M-08、P-01、P-02、P-06、P-07、P-11、P-12
 
 Android Potential Risk 在升级为 Confirmed Bug 前，应补充真机、Robolectric、Compose UI 或 MockWebServer 证据。
 
-### Batch 7：工程质量
+### Batch 6：工程质量
 
 - M-14
 - M-15
@@ -262,4 +250,15 @@ main 合并 commit: f6ef60dcb2a3c9d914f7dfd55a5256ec5f7bb7a6
 审查结论: PASS
 测试结果: M-01 定向测试 11/11 通过；Server 76/76 全部通过
 状态: Fixed
+```
+
+### M-02
+
+```text
+ID: M-02
+最终分类: Not a Bug
+决定者: 项目负责人
+理由: 当前协议按设计证明私有位置位于由当前位置和 resolution
+      决定的公开 H3 六边形内，不存在服务端授权区域要求。
+状态: Rejected
 ```
