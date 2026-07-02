@@ -14,29 +14,90 @@ const { parseCanonicalPayload } = require("./keystore-signature");
 
 const DEFAULT_LOG_PATH = path.resolve(__dirname, "../logs/interactions.jsonl");
 
+// ---- 不可抛出的 logger 错误报告 ----
+// 使用同步 fd 写入 stderr（fd 2），自身包裹在独立 try/catch 内。
+// stderr 不可写、/dev/full、磁盘满或 fd 异常时静默放弃，绝不向调用方抛出。
+//
+// 错误信息仅包含：
+//   - 固定前缀 [interaction-logger]
+//   - 操作名称（硬编码字面量）
+//   - 安全提取的 error.code（仅限字符串，默认 "UNKNOWN"）
+//
+// 绝不输出 error.message、error.stack、文件路径或任何用户数据。
+function safeReportLoggerFailure(operation, error) {
+  let code = "UNKNOWN";
+  try {
+    if (error && typeof error.code === "string" && error.code.length > 0) {
+      code = error.code;
+    }
+  } catch (_unused) {
+    // error.code getter 抛异常 → 使用默认值
+  }
+
+  try {
+    fs.writeSync(2, `[interaction-logger] ${operation} failed (${code})\n`);
+  } catch (_unused) {
+    // stderr 不可写 → 静默放弃，不递归报告
+  }
+}
+
 // ---- 创建交互日志记录器 ----
 // 返回 { filePath, log(record), recent(limit) } 三个方法
 // log() 追加一条 JSON 行到文件末尾
 // recent() 读取文件末尾最近 N 行
+//
+// I/O 故障隔离 (M-09):
+// - 日志目录创建失败不会阻止 Server 启动，logger 降级为 no-op；
+// - 整个 log() 过程（时间戳、record 展开、getter、JSON 序列化、
+//   appendFileSync）在局部 try/catch 内，任何失败不向业务层抛出；
+// - recent 读取失败返回空数组；
+// - 错误报告本身不可抛出（safeReportLoggerFailure）。
 function createInteractionLogger(options = {}) {
   // filePath: JSONL 日志文件完整路径，支持通过环境变量 INTERACTION_LOG_PATH 自定义
   const filePath = options.filePath || process.env.INTERACTION_LOG_PATH || DEFAULT_LOG_PATH;
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+
+  // dirReady: 日志目录是否已成功创建。目录创建失败时 logger 降级为 no-op，
+  // 避免 Server 启动即崩溃。
+  let dirReady = false;
+  try {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    dirReady = true;
+  } catch (error) {
+    safeReportLoggerFailure("mkdir", error);
+  }
 
   return {
     filePath,
     // 追加一条日志（JSONL 格式：一行 JSON）
+    // 整个构造+写入过程在局部故障边界内：任何失败均 fail-open，
+    // 仅通过 safeReportLoggerFailure 报告，绝不向调用方抛出。
     log(record) {
-      // line: 一行完整的 JSON 字符串，ts 字段为当前 ISO 时间戳
-      const line = JSON.stringify({
-        ts: new Date().toISOString(),
-        ...record,
-      });
-      fs.appendFileSync(filePath, `${line}\n`, "utf8");
+      if (!dirReady) {
+        return;
+      }
+
+      try {
+        // 所有可能失败的操作全部在 try 块内：
+        // 时间戳构造、record 展开、getter 执行、JSON 序列化、换行拼接、文件追加
+        const line = JSON.stringify({
+          ts: new Date().toISOString(),
+          ...record,
+        });
+        fs.appendFileSync(filePath, `${line}\n`, "utf8");
+      } catch (error) {
+        // 任何失败均通过不可抛出的 helper 报告，不访问 record 的任何字段
+        safeReportLoggerFailure("write", error);
+      }
     },
     // 读取最近 limit 条日志
+    // 读取失败时返回空数组，避免影响调用方。
     recent(limit = 50) {
-      return readRecentInteractions(filePath, limit);
+      try {
+        return readRecentInteractions(filePath, limit);
+      } catch (error) {
+        safeReportLoggerFailure("read", error);
+        return [];
+      }
     },
   };
 }
