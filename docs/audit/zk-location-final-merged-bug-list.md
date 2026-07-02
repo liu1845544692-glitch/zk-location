@@ -311,8 +311,37 @@ main 合并 commit: 7941ec62dcca55fb6466a802f63399c700476249
 
 ```text
 ID: M-04
-状态: Confirmed Bug / Pending
-说明: 缺失、截断或损坏 zkey 导致 panic。
-      旧 commit 6ed4c8ff9dea0fa60fb3c8413cc515938b149153 未经独立审查，不得合并。
-      将在 Codex 对 M-03/M-05 给出 PASS 后单独重做和审查。
+状态: Fixed
+修复者: Claude
+独立审查者: Codex
+审查结论: PASS WITH FOLLOW-UP
+原修复 commit: ab8ac91bc6f6767c9c9c203919703e8a824f08d4
+main 合并 commit: 2414fc68b0b1a14c8172080f55c6716caaae2f18
+
+核心结果:
+- 缺失、目录、空、截断、随机和结构损坏 zkey 均受控拒绝；
+- generate_circom_proof 与 verify_circom_proof 不再让相关
+  第三方 zkey 解析 panic 穿过生产 API；
+- Password diagnostic 的 prove/verify 路径补齐 panic 隔离；
+- 合法 Location、Regex 及 M-03/M-05 无回归；
+- 未修改任何密码学资产或协议。
+
+实现说明:
+- 当前 main 在 M-03/M-05 修复中已为 generate_circom_proof
+  和 verify_circom_proof 加入窄范围 catch_unwind。
+- M-04 提交主要增加 zkey 文件前置检查和稳定错误分类、
+  Password diagnostic 中缺失的 panic 隔离，以及各类
+  非法 zkey 回归测试。
+- 第三方解析 panic 被窄范围隔离并转换为稳定 MoproError，
+  不再穿过 Rust/UniFFI 生产边界。
+
+非阻断 follow-up:
+- F-M04-01：增加实际 File::open 可读性检查，使不可读 zkey
+  稳定分类为 "zkey cannot be read"。
+- F-M04-02：处理已捕获 panic 的默认 panic hook 输出，
+  避免第三方源码路径和 panic 信息进入 stderr/Android logcat。
+- F-M04-03：在 Android/instrumentation 环境动态覆盖
+  Password diagnostic 的损坏 zkey 行为。
+
+上述 follow-up 不影响 M-04 的 Fixed 状态。
 ```
