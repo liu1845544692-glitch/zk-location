@@ -27,6 +27,7 @@ use sha2::{Digest, Sha256};
 use std::convert::TryFrom;
 use std::fs::File;
 use std::io::Read;
+use std::path::Path;
 use std::str::FromStr;
 
 // BN254 scalar field modulus (Fr::MODULUS).
@@ -38,6 +39,32 @@ const BN254_SCALAR_MODULUS: &str =
 // G1/G2 coordinates must be strictly less than this value.
 const BN254_BASE_MODULUS: &str =
     "21888242871839275222246405745257275088696311157297823662689037894645226208583";
+
+/// 对 zkey 文件进行 OS 级别的前置校验：
+/// - 路径存在；
+/// - 路径指向普通文件（非目录/设备等）；
+/// - 文件可读取（metadata 可访问）；
+/// - 文件非空。
+///
+/// 不验证文件内容或格式——格式级别损坏由 catch_unwind 处理。
+fn validate_zkey_file(path: &str) -> Result<(), MoproError> {
+    let p = Path::new(path);
+
+    if !p.exists() {
+        return Err(MoproError::CircomError("zkey not found".to_string()));
+    }
+    if !p.is_file() {
+        return Err(MoproError::CircomError(
+            "zkey is not a regular file".to_string(),
+        ));
+    }
+    let metadata = std::fs::metadata(p)
+        .map_err(|_| MoproError::CircomError("zkey cannot be read".to_string()))?;
+    if metadata.len() == 0 {
+        return Err(MoproError::CircomError("zkey is truncated".to_string()));
+    }
+    Ok(())
+}
 
 /// 验证 public input 字符串是否为规范十进制标量：
 /// - 非空；
@@ -353,6 +380,9 @@ pub fn generate_circom_proof(
     circuit_inputs: String,
     proof_lib: ProofLib,
 ) -> Result<CircomProofResult, MoproError> {
+    // OS 级别前置文件检查：在进入 circom_prover 前捕获缺失/目录/空文件等情况。
+    validate_zkey_file(&zkey_path)?;
+
     // name：从 zkey_path 提取文件名，用于查找 witness 注册表。
     let name = std::path::Path::new(zkey_path.as_str())
         .file_name()
@@ -376,11 +406,7 @@ pub fn generate_circom_proof(
             zkey_path_clone,
         )
     }))
-    .map_err(|_| {
-        MoproError::CircomError(
-            "Generate Proof panicked: zkey may be corrupt or unsupported".to_string(),
-        )
-    })?
+    .map_err(|_| MoproError::CircomError("zkey is invalid or corrupted".to_string()))?
     .map_err(|e| MoproError::CircomError(format!("Generate Proof error: {}", e)))?;
 
     // 当前项目只使用 BN254 曲线；不接受其他曲线。
@@ -404,6 +430,9 @@ pub fn generate_password_circom_proof_diagnostic(
     zkey_path: String,
     circuit_inputs: String,
 ) -> Result<PasswordProofDiagnostic, MoproError> {
+    // OS 级别前置文件检查。
+    validate_zkey_file(&zkey_path)?;
+
     let name = std::path::Path::new(&zkey_path)
         .file_name()
         .and_then(|value| value.to_str())
@@ -415,24 +444,34 @@ pub fn generate_password_circom_proof_diagnostic(
     }
     let witness_fn = crate::circom_get(name)
         .ok_or_else(|| MoproError::CircomError(format!("Unknown ZKEY: {name}")))?;
-    let generated = CircomProver::prove(
-        CircomProverProofLib::Arkworks,
-        witness_fn,
-        circuit_inputs,
-        zkey_path.clone(),
-    )
-    .map_err(|e| MoproError::CircomError(format!("Generate Proof error: {e}")))?;
+
+    // catch_unwind 隔离 CircomProver::prove 中依赖可能的 panic（防御性）。
+    let zkey_clone = zkey_path.clone();
+    let generated = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        CircomProver::prove(
+            CircomProverProofLib::Arkworks,
+            witness_fn,
+            circuit_inputs,
+            zkey_clone,
+        )
+    }))
+    .map_err(|_| MoproError::CircomError("zkey is invalid or corrupted".to_string()))?
+    .map_err(|e| MoproError::CircomError(format!("Generate Proof error: {}", e)))?;
 
     let proof_json = serde_json::to_vec(&generated)
         .map_err(|e| MoproError::CircomError(format!("proof serialization failed: {e}")))?;
     let proof_sha256 = sha256_bytes(&proof_json);
     let proof_json_bytes = proof_json.len() as u64;
-    let native_verify = CircomProver::verify(
-        CircomProverProofLib::Arkworks,
-        generated.clone(),
-        zkey_path.clone(),
-    )
-    .map_err(|e| MoproError::CircomError(format!("Native verification error: {e}")))?;
+
+    // catch_unwind 隔离 CircomProver::verify 中依赖可能的 panic（防御性）。
+    let verify_zkey = zkey_path.clone();
+    let generated_clone = generated.clone();
+    let native_verify = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        CircomProver::verify(CircomProverProofLib::Arkworks, generated_clone, verify_zkey)
+    }))
+    .map_err(|_| MoproError::CircomError("zkey is invalid or corrupted".to_string()))?
+    .map_err(|e| MoproError::CircomError(format!("Native verification error: {}", e)))?;
+
     let zkey_sha256 = sha256_file(&zkey_path)?;
 
     Ok(PasswordProofDiagnostic {
@@ -487,6 +526,9 @@ pub fn verify_circom_proof(
     proof_result: CircomProofResult,
     proof_lib: ProofLib,
 ) -> Result<bool, MoproError> {
+    // OS 级别前置文件检查。
+    validate_zkey_file(&zkey_path)?;
+
     // 只接受项目实际使用的 BN254 curve。
     if proof_result.proof.curve != CURVE_BN254 {
         return Err(MoproError::CircomError(format!(
@@ -510,11 +552,7 @@ pub fn verify_circom_proof(
             zkey_path,
         )
     }))
-    .map_err(|_| {
-        MoproError::CircomError(
-            "Verification panicked: zkey may be corrupt or unsupported".to_string(),
-        )
-    })?
+    .map_err(|_| MoproError::CircomError("zkey is invalid or corrupted".to_string()))?
     .map_err(|e| MoproError::CircomError(format!("Verification error: {}", e)))
 }
 
@@ -547,6 +585,8 @@ mod validation_tests {
     use crate::MoproError;
     use num_bigint::BigUint;
     use std::convert::TryFrom;
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
     use std::panic;
     use std::str::FromStr;
 
@@ -966,5 +1006,318 @@ mod validation_tests {
             verify_result.is_err(),
             "x+q alias should be rejected by production verifier"
         );
+    }
+
+    // =========================================================================
+    // M-04: invalid zkey tests — 非法 zkey 文件必须返回 Err，不得 panic
+    // =========================================================================
+
+    /// 帮助函数：创建不存在的 zkey 路径
+
+    fn missing_zkey_path() -> String {
+        "/tmp/zk_location_m04_nonexistent_".to_string()
+            + &std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+                .to_string()
+            + ".zkey"
+    }
+
+    fn create_temp_file(name: &str, contents: &[u8]) -> String {
+        let path = format!("/tmp/{name}");
+        let mut f = File::create(&path).expect("create temp file");
+        f.write_all(contents).expect("write temp file");
+        path
+    }
+
+    fn create_temp_random_file(name: &str, size: usize) -> String {
+        // 使用固定垃圾模式替代随机数，避免引入 rand 依赖。
+        let data: Vec<u8> = (0..size).map(|i| (i % 256) as u8 ^ 0xAB).collect();
+        create_temp_file(name, &data)
+    }
+
+    fn copy_valid_zkey_truncated(truncate_at: u64) -> String {
+        let src = "./test-vectors/circom/areajudge_final.zkey";
+        let dst = format!("/tmp/m04_truncated_{truncate_at}.zkey");
+        std::fs::copy(src, &dst).expect("copy zkey");
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&dst)
+            .expect("open for truncate");
+        file.set_len(truncate_at).expect("truncate");
+        dst
+    }
+
+    fn corrupt_zkey_sections() -> String {
+        let src = "./test-vectors/circom/areajudge_final.zkey";
+        let dst = "/tmp/m04_corrupt_sections.zkey".to_string();
+        let data = std::fs::read(src).expect("read zkey");
+        // 修改 section table 中第一个 section 的 offset 为极大值
+        // 在 magic(4) + version(4) + num_sections(4) = 12 字节后
+        // 第一个 section: id(4) + length(8) = 12 bytes
+        // 实际数据从 position 开始，修改为文件大小的10倍使其越界
+        let mut corrupted = data.clone();
+        if corrupted.len() > 24 {
+            // 将第一个 section 的 length 设为极大值
+            corrupted[16] = 0xff;
+            corrupted[17] = 0xff;
+            corrupted[18] = 0xff;
+            corrupted[19] = 0xff;
+            corrupted[20] = 0xff;
+            corrupted[21] = 0xff;
+            corrupted[22] = 0xff;
+            corrupted[23] = 0xff;
+        }
+        let mut f = File::create(&dst).expect("create corrupt zkey");
+        f.write_all(&corrupted).expect("write corrupt zkey");
+        dst
+    }
+
+    // --- M-04: 缺失和文件类型 ---
+
+    #[test]
+    fn m04_missing_zkey_verify_returns_err() {
+        let path = missing_zkey_path();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            verify_circom_proof(path, valid_proof_result_for_test(), ProofLib::Arkworks)
+        }));
+        match result {
+            Ok(Err(e)) => {
+                let msg = format!("{e:?}");
+                assert!(
+                    msg.contains("zkey not found"),
+                    "expected 'zkey not found', got: {msg}"
+                );
+            }
+            Ok(Ok(_)) => panic!("expected Err for missing zkey"),
+            Err(_) => panic!("PANICKED on missing zkey"),
+        }
+    }
+
+    #[test]
+    fn m04_missing_zkey_generate_returns_err() {
+        let path = missing_zkey_path();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            generate_circom_proof(path, "{}".to_string(), ProofLib::Arkworks)
+        }));
+        match result {
+            Ok(Err(e)) => {
+                let msg = format!("{e:?}");
+                assert!(
+                    msg.contains("zkey not found"),
+                    "expected 'zkey not found', got: {msg}"
+                );
+            }
+            Ok(Ok(_)) => panic!("expected Err for missing zkey"),
+            Err(_) => panic!("PANICKED on missing zkey"),
+        }
+    }
+
+    #[test]
+    fn m04_directory_zkey_returns_err() {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            verify_circom_proof(
+                "/tmp".to_string(),
+                valid_proof_result_for_test(),
+                ProofLib::Arkworks,
+            )
+        }));
+        match result {
+            Ok(Err(e)) => {
+                let msg = format!("{e:?}");
+                assert!(
+                    msg.contains("not a regular file"),
+                    "expected 'not a regular file', got: {msg}"
+                );
+            }
+            Ok(Ok(_)) => panic!("expected Err for directory"),
+            Err(_) => panic!("PANICKED on directory"),
+        }
+    }
+
+    #[test]
+    fn m04_empty_zkey_returns_err() {
+        let path = create_temp_file("m04_empty.zkey", &[]);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            verify_circom_proof(path, valid_proof_result_for_test(), ProofLib::Arkworks)
+        }));
+        std::fs::remove_file("/tmp/m04_empty.zkey").ok();
+        match result {
+            Ok(Err(e)) => {
+                let msg = format!("{e:?}");
+                assert!(
+                    msg.contains("zkey is truncated"),
+                    "expected 'zkey is truncated', got: {msg}"
+                );
+            }
+            Ok(Ok(_)) => panic!("expected Err for empty zkey"),
+            Err(_) => panic!("PANICKED on empty zkey"),
+        }
+    }
+
+    #[test]
+    fn m04_1_byte_zkey_no_panic() {
+        let path = create_temp_file("m04_1byte.zkey", &[0x00]);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            verify_circom_proof(path, valid_proof_result_for_test(), ProofLib::Arkworks)
+        }));
+        std::fs::remove_file("/tmp/m04_1byte.zkey").ok();
+        match result {
+            Ok(Err(_)) => {} // 预期：前置通过但验证 panic 被 catch
+            Ok(Ok(_)) => panic!("expected Err for 1-byte zkey"),
+            Err(_) => panic!("PANICKED on 1-byte zkey"),
+        }
+    }
+
+    #[test]
+    fn m04_511_byte_zkey_no_panic() {
+        let path = create_temp_random_file("m04_511byte.zkey", 511);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            verify_circom_proof(path, valid_proof_result_for_test(), ProofLib::Arkworks)
+        }));
+        std::fs::remove_file("/tmp/m04_511byte.zkey").ok();
+        match result {
+            Ok(Err(_)) => {}
+            Ok(Ok(_)) => panic!("expected Err for 511-byte zkey"),
+            Err(_) => panic!("PANICKED on 511-byte zkey"),
+        }
+    }
+
+    // --- M-04: 大文件随机垃圾 ---
+
+    #[test]
+    fn m04_2048_random_zkey_no_panic() {
+        let path = create_temp_random_file("m04_2048rand.zkey", 2048);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            verify_circom_proof(path, valid_proof_result_for_test(), ProofLib::Arkworks)
+        }));
+        std::fs::remove_file("/tmp/m04_2048rand.zkey").ok();
+        match result {
+            Ok(Err(_)) => {}
+            Ok(Ok(_)) => panic!("expected Err for 2048 random zkey"),
+            Err(_) => panic!("PANICKED on 2048 random zkey"),
+        }
+    }
+
+    #[test]
+    fn m04_4096_random_zkey_no_panic() {
+        let path = create_temp_random_file("m04_4096rand.zkey", 4096);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            verify_circom_proof(path, valid_proof_result_for_test(), ProofLib::Arkworks)
+        }));
+        std::fs::remove_file("/tmp/m04_4096rand.zkey").ok();
+        match result {
+            Ok(Err(_)) => {}
+            Ok(Ok(_)) => panic!("expected Err for 4096 random zkey"),
+            Err(_) => panic!("PANICKED on 4096 random zkey"),
+        }
+    }
+
+    // --- M-04: 结构化损坏 ---
+
+    #[test]
+    fn m04_truncated_zkey_header_no_panic() {
+        let path = copy_valid_zkey_truncated(100);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            verify_circom_proof(path, valid_proof_result_for_test(), ProofLib::Arkworks)
+        }));
+        std::fs::remove_file("/tmp/m04_truncated_100.zkey").ok();
+        match result {
+            Ok(Err(_)) => {}
+            Ok(Ok(_)) => panic!("expected Err for truncated zkey"),
+            Err(_) => panic!("PANICKED on truncated zkey"),
+        }
+    }
+
+    #[test]
+    fn m04_corrupt_section_offset_no_panic() {
+        let path = corrupt_zkey_sections();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            verify_circom_proof(path, valid_proof_result_for_test(), ProofLib::Arkworks)
+        }));
+        std::fs::remove_file("/tmp/m04_corrupt_sections.zkey").ok();
+        match result {
+            Ok(Err(_)) => {}
+            Ok(Ok(_)) => panic!("expected Err for corrupt section offset"),
+            Err(_) => panic!("PANICKED on corrupt section offset"),
+        }
+    }
+
+    // --- M-04: generate_circom_proof 损坏 zkey ---
+
+    #[test]
+    fn m04_generate_empty_zkey_no_panic() {
+        let path = create_temp_file("m04_gen_empty.zkey", &[]);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            generate_circom_proof(path, "{}".to_string(), ProofLib::Arkworks)
+        }));
+        std::fs::remove_file("/tmp/m04_gen_empty.zkey").ok();
+        match result {
+            Ok(Err(_)) => {}
+            Ok(Ok(_)) => panic!("expected Err for empty zkey in generate"),
+            Err(_) => panic!("PANICKED on empty zkey in generate"),
+        }
+    }
+
+    #[test]
+    fn m04_generate_random_zkey_no_panic() {
+        let path = create_temp_random_file("m04_gen_rand.zkey", 2048);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            generate_circom_proof(path, "{}".to_string(), ProofLib::Arkworks)
+        }));
+        std::fs::remove_file("/tmp/m04_gen_rand.zkey").ok();
+        match result {
+            Ok(Err(_)) => {}
+            Ok(Ok(_)) => panic!("expected Err for random zkey in generate"),
+            Err(_) => panic!("PANICKED on random zkey in generate"),
+        }
+    }
+
+    // --- M-04: generate_password_circom_proof_diagnostic ---
+
+    #[test]
+    fn m04_password_diag_missing_zkey_no_panic() {
+        let path = missing_zkey_path();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            generate_password_circom_proof_diagnostic(path, "{}".to_string())
+        }));
+        match result {
+            Ok(Err(_)) => {}
+            Ok(Ok(_)) => panic!("expected Err for missing zkey in password diag"),
+            Err(_) => panic!("PANICKED on missing zkey in password diag"),
+        }
+    }
+
+    // --- M-04: 不可读文件 ---
+
+    #[test]
+    fn m04_unreadable_zkey_returns_err() {
+        let path = create_temp_random_file("m04_noread.zkey", 1024);
+
+        // chmod 000
+        let perms = std::fs::Permissions::from_mode(0o000);
+        std::fs::set_permissions(&path, perms).expect("chmod");
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            verify_circom_proof(
+                path.clone(),
+                valid_proof_result_for_test(),
+                ProofLib::Arkworks,
+            )
+        }));
+
+        // 恢复权限并清理
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644));
+        std::fs::remove_file("/tmp/m04_noread.zkey").ok();
+
+        match result {
+            Ok(Err(_)) => {
+                // root 用户 chmod 000 可能仍可读，此时 zkey（垃圾数据）
+                // 被 catch_unwind 捕获并返回 Err。只要不 panic 即可。
+            }
+            Ok(Ok(_)) => panic!("expected Err for unreadable zkey"),
+            Err(_) => panic!("PANICKED on unreadable zkey"),
+        }
     }
 }
