@@ -345,3 +345,55 @@ main 合并 commit: 2414fc68b0b1a14c8172080f55c6716caaae2f18
 
 上述 follow-up 不影响 M-04 的 Fixed 状态。
 ```
+
+### M-09
+
+```text
+ID: M-09
+状态: Fixed
+修复者: Claude
+独立审查者: Codex
+审查结论: PASS WITH FOLLOW-UP（第二轮）
+原业务 commit: 338efa5acf76a4a792cf5011f08f66603453145f（fix/m-09-interaction-logger-io）
+main cherry-pick commit: ca534fad2ce13ac32b6c027a45426ff91bbfee19
+被拒绝的旧 commit: afc18d34e586417d119661b533b0f543aaf32f10（第一轮 FAIL）
+
+修复内容:
+- createInteractionLogger: fs.mkdirSync 失败时 logger 降级为 no-op，
+  Server 仍可正常启动；
+- log(): 整个日志条目构造和写入过程（时间戳、record 展开、getter、
+  JSON.stringify、换行拼接、fs.appendFileSync）均在局部 try/catch
+  故障边界内，任何失败均不向业务层抛出；
+- recent(): 读取失败返回空数组，不影响调用方；
+- safeReportLoggerFailure helper: 使用 fs.writeSync(2, ...)
+  同步写入 stderr，自身包裹在独立 try/catch 内，stderr 不可写
+  （/dev/full、ENOSPC、EACCES 等）时静默放弃；
+- 错误报告仅包含固定前缀、操作名称和 error.code，不含 error.message、
+  stack、文件绝对路径或任何用户数据。
+
+安全验证:
+- 真实 Server，interaction log 路径为目录，stderr 重定向至
+  /dev/full，连续两个 /nonce 和一个 /health 均返回 HTTP 200，
+  Node 进程保持存活；
+- 循环引用、BigInt、异常 getter 均在
+  --unhandled-rejections=strict 模式下子进程 exit 0；
+- 无敏感标记泄露；
+- Blocking findings: none。
+
+测试结果（main: ca534fa）:
+- M-09 定向测试: 18/18 pass
+- 完整 Server 测试: 90/90 pass
+- 无新增回归
+
+非阻断 follow-up:
+- F-M09-01：初始化失败后不自动恢复。mkdirSync 初始化失败后
+  dirReady 永久为 false，服务继续运行但可能长期静默丢失日志。
+  建议后续考虑受控重试目录初始化，或将 degraded 状态暴露给健康检查。
+- F-M09-02：recent() catch 范围较宽。读取失败统一降级为 []，
+  可能降低可观测性。建议后续区分预期 filesystem error 与程序错误。
+- F-M09-03：次要测试覆盖缺口。提交内测试未直接覆盖真实 Server、
+  异常 error.code getter、异常 Proxy 和 append EACCES；
+  无 /dev/full 的平台未显示 skip。Codex 已独立动态覆盖这些生产路径。
+
+上述 follow-up 不影响 M-09 的 Fixed 状态。
+```
