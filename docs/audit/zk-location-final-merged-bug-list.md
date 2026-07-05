@@ -397,3 +397,49 @@ main cherry-pick commit: ca534fad2ce13ac32b6c027a45426ff91bbfee19
 
 上述 follow-up 不影响 M-09 的 Fixed 状态。
 ```
+
+### M-11
+
+```text
+ID: M-11
+状态: Fixed
+修复者: Claude
+独立审查者: Codex
+审查结论: PASS WITH FOLLOW-UP
+原始修复 commit: f8047d7d2ddd2022fb5deb94af00d3b58f55cc51
+main cherry-pick commit: 283b689c877cbc7e363924035982fb0a864f1314
+
+核心结果:
+- 未认证诊断接口（/logs/interactions、/stats/performance、/reports/latest）已禁用（返回 404）；
+- /health 仅返回 {"status":"ok"}，不暴露路径、用户数、nonce 数量和 TTL；
+- 公共错误身份使用不可伪造的 WeakMap + 固定定义表 + PublicError 安全基类；
+- 未知 throwable 固定 500 "Internal error"，不泄露原始 message/path/stack；
+- 合法认证 400/401/403/404/409/422 保持；
+- AuthStore/PasswordStore crypto 和 filesystem 错误脱敏为固定公开消息；
+- 损坏 PasswordStore JSON 构造失败，不初始化空库、不覆盖损坏文件；
+- proof attempts 使用精确内部→公开格式映射表，最多 5 项，只读取索引 0..4；
+- Regex Arkworks fallback 保留末尾槽位，主 verifier 最多 4 项 + Arkworks 1 项；
+- logger 只保存固定字段 ts/type/statusCode/durationMs，type 使用固定枚举；
+- 不保存 nonce、TEE nonce、token、metrics、签名、证书内容、路径；
+- clientArtifacts/clientMetrics 不反射到 HTTP 响应；
+- 证书 rootFingerprint/leafFingerprint/subject/issuer/serial 不进入 HTTP 或日志；
+- rejected-root 文件命名使用内部独立计算的 certificateFingerprint，不创建 undefined.pem；
+- M-14 trust comparison 保持不变；
+- 正常 register/login/logout/password/proof/nonce/key/restart 流程无回归。
+
+测试结果（main: 283b689）:
+- M-11 定向测试: 17/17 pass
+- interaction logger 测试: 18/18 pass
+- password register/login 测试: 30/30 pass（含 1 个 M-14 fixture 预存失败）
+- proof format/arkworks 测试: 4/4 pass
+- M-01 Location 测试: 11/11 pass
+- 完整 Server 测试: 107 tests, 106 pass, 1 fail（M-14 rejected-attestation-root fixture 缺失）
+- 父提交（d8ee8b0）测试基线: 7 tests, 6 pass, 1 fail（相同 M-14 失败）
+- target 与 parent M-14 fixture 行为完全一致
+
+非阻断 follow-up:
+- F-M11-01：增加 committed regression tests 覆盖 primary 5/6+ + Arkworks success
+- F-M11-02：增加 committed regression tests 覆盖 primary 5/6+ + Arkworks invalid
+
+上述 follow-up 不影响 M-11 的 Fixed 状态。
+```
