@@ -77,7 +77,7 @@ function createInteractionLogger(options = {}) {
           statusCode: safeLogStatus(record && record.statusCode),
           durationMs: safeLogDuration(record && record.durationMs),
         });
-        fs.appendFileSync(filePath, `${line}\n`, "utf8");
+        fs.appendFileSync(filePath, `${line}\n`, { encoding: "utf8", mode: 0o600 });
       } catch (error) {
         safeReportLoggerFailure("write", error);
       }

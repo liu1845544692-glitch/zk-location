@@ -447,7 +447,10 @@ class JsonAuthStore {
 
   // ---- 保存数据库到 JSON 文件 ----
   save() {
-    fs.writeFileSync(this.filePath, `${JSON.stringify(this.db, null, 2)}\n`, "utf8");
+    fs.writeFileSync(this.filePath, `${JSON.stringify(this.db, null, 2)}\n`, {
+      encoding: "utf8",
+      mode: 0o600,
+    });
   }
 
   // ---- 为用户签发 session token ----
