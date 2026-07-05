@@ -7,6 +7,11 @@
 // 兼容 snarkjs 和 mopro 两种 proof 格式，调用 snarkjs 进行 Groth16 验证。
 
 const snarkjs = require("snarkjs");
+const { PublicError } = require("./public-error");
+
+function formatError(message) {
+  return new PublicError("BAD_REQUEST", message);
+}
 
 // ---- 从请求 payload 中提取 public signals ----
 // 兼容多种命名惯例：publicSignals / public_inputs / inputs / proofResult.inputs
@@ -32,7 +37,7 @@ function normalizePublicSignals(payload) {
     payload.proofResult?.inputs;
 
   if (!Array.isArray(publicSignals)) {
-    throw new Error("Missing publicSignals/public_inputs/inputs array");
+    throw formatError("Missing publicSignals/public_inputs/inputs array");
   }
 
   // snarkjs 需要字符串形式的 public signals
@@ -53,7 +58,7 @@ function proofCandidates(payload) {
   // proof: 从请求中提取 proof 对象，兼容直接传 proof 或 mopro 的 proofResult.proof
   const proof = payload.proof ?? payload.proofResult?.proof;
   if (!proof || typeof proof !== "object") {
-    throw new Error("Missing proof object");
+    throw formatError("Missing proof object");
   }
 
   // snarkjs 格式直接返回
@@ -67,7 +72,7 @@ function proofCandidates(payload) {
   }
 
   if (!proof.a || !proof.b || !proof.c) {
-    throw new Error("Unsupported proof shape. Expected snarkjs pi_* or mopro a/b/c proof");
+    throw formatError("Unsupported proof shape. Expected snarkjs pi_* or mopro a/b/c proof");
   }
 
   // 将 mopro 格式的 a/b/c 三点转换为 snarkjs 格式的 [x,y,z] 数组
@@ -189,14 +194,14 @@ function normalizeG1(value, label) {
   // label: 用于错误信息中的字段名标识
   if (Array.isArray(value)) {
     if (value.length < 2) {
-      throw new Error(`${label} must contain at least x/y`);
+      throw formatError(`${label} must contain at least x/y`);
     }
     // 数组格式：z 分量可省略（默认为 "1"，即仿射坐标的无穷远点）
     return [value[0].toString(), value[1].toString(), (value[2] ?? "1").toString()];
   }
 
   if (!value.x || !value.y) {
-    throw new Error(`${label} must contain x/y`);
+    throw formatError(`${label} must contain x/y`);
   }
 
   // 对象格式：z 可省略，默认为 "1"
@@ -208,7 +213,7 @@ function normalizeG1(value, label) {
 function normalizeG2(value, label) {
   if (Array.isArray(value)) {
     if (value.length < 2) {
-      throw new Error(`${label} must contain x/y pairs`);
+      throw formatError(`${label} must contain x/y pairs`);
     }
     return {
       x: normalizePair(value[0], `${label}.x`),
@@ -230,7 +235,7 @@ function normalizeG2(value, label) {
 // label: 错误信息中的字段名
 function normalizePair(value, label) {
   if (!Array.isArray(value) || value.length !== 2) {
-    throw new Error(`${label} must be a two-element array`);
+    throw formatError(`${label} must be a two-element array`);
   }
   return [value[0].toString(), value[1].toString()];
 }

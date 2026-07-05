@@ -8,9 +8,11 @@ const DEFAULT_PASSWORD_REGISTRATION_DB_PATH = path.resolve(
   "../data/password-registrations.json"
 );
 
-class PasswordRegistrationStoreError extends Error {
+const { PublicError } = require("./public-error");
+
+class PasswordRegistrationStoreError extends PublicError {
   constructor(statusCode, code, message) {
-    super(message);
+    super(code, message);
     this.statusCode = statusCode;
     this.code = code;
   }
@@ -101,7 +103,7 @@ class JsonPasswordRegistrationStore {
       throw new PasswordRegistrationStoreError(
         500,
         "PASSWORD_REGISTRATION_DB_WRITE_FAILED",
-        `Password registration database write failed: ${error.message || error}`
+        "Password registration database write failed"
       );
     }
   }

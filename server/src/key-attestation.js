@@ -30,6 +30,7 @@
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
+const { PublicError } = require("./public-error");
 
 // Android Key Attestation 扩展的 OID
 // 当 X.509 证书的扩展中携带此 OID 时，说明该证书包含 KeyDescription 结构
@@ -109,11 +110,10 @@ const VERIFIED_BOOT_STATE = {
   3: "Failed",      // 验证失败
 };
 
-// ---- Attestation 专用错误类型 ----
-class AttestationError extends Error {
-  constructor(message) {
-    super(message);
-    this.statusCode = 400;
+// ---- Attestation 专用错误类型 (M-11: 继承 PublicError) ----
+class AttestationError extends PublicError {
+  constructor(message, defKey) {
+    super(defKey || "INVALID_ATTESTATION", message);
   }
 }
 
@@ -152,7 +152,7 @@ function verifyAndroidKeyAttestation({
     try {
       return new crypto.X509Certificate(Buffer.from(value, "base64"));
     } catch (error) {
-      throw new AttestationError(`Invalid certificateChain[${index}]: ${error.message || error}`);
+      throw new AttestationError("Invalid certificate chain entry", "INVALID_ATTESTATION");
     }
   });
 
@@ -191,9 +191,6 @@ function verifyAndroidKeyAttestation({
     certificateChainVerified: chain.verified,
     rootSelfSigned: chain.rootSelfSigned,
     rootTrusted: chain.rootTrusted,
-    rootFingerprint: chain.rootFingerprint,
-    rootSubject: certificates[certificates.length - 1].subject,
-    rootIssuer: certificates[certificates.length - 1].issuer,
   };
 }
 
@@ -343,7 +340,7 @@ function summarizeAttestationCertificateChain(certificateChainBase64, trustRoots
     try {
       return new crypto.X509Certificate(Buffer.from(value, "base64"));
     } catch (error) {
-      throw new AttestationError(`Invalid certificateChain[${index}]: ${error.message || error}`);
+      throw new AttestationError("Invalid certificate chain entry", "INVALID_ATTESTATION");
     }
   });
 
@@ -357,17 +354,12 @@ function summarizeAttestationCertificateChain(certificateChainBase64, trustRoots
   let trustStoreError = null;
   try {
     rootTrusted = loadTrustedRootFingerprints(trustRootsPath).has(rootFingerprint);
-  } catch (error) {
-    trustStoreError = error.message || String(error);
+  } catch (_error) {
+    trustStoreError = "Trust store unavailable";
   }
 
   return {
     certificateChainLength: certificates.length,
-    leafSubject: certificates[0].subject,
-    leafIssuer: certificates[0].issuer,
-    rootSubject: root.subject,
-    rootIssuer: root.issuer,
-    rootFingerprint,
     rootSelfSigned: root.verify(root.publicKey),
     rootTrusted,
     trustStoreError,
@@ -377,19 +369,20 @@ function summarizeAttestationCertificateChain(certificateChainBase64, trustRoots
 // ---- 将不被信任的 root 证书保存到 rejected-attestation-roots 目录 ----
 // 用于后续人工审查，确认后可手动加入 local_android_attestation_roots.pem
 function saveRejectedAttestationRoot(certificateChainBase64, outputDir = DEFAULT_REJECTED_ROOTS_DIR) {
-  // summary: 证书链摘要，用于判断 root 是否被信任
   const summary = summarizeAttestationCertificateChain(certificateChainBase64);
   if (!summary || summary.rootTrusted) {
     return null;
   }
 
-  // rootBase64: root 证书的 Base64 编码
   const rootBase64 = certificateChainBase64[certificateChainBase64.length - 1];
-  // root: 从 Base64 解析的 root X509Certificate 对象
   const root = new crypto.X509Certificate(Buffer.from(rootBase64, "base64"));
+  // M-11: 内部 fingerprint 仅用于文件命名，不公开
+  const fp = certificateFingerprint(root);
+  if (typeof fp !== "string" || fp.length === 0) {
+    return null; // 安全拒绝，不创建 undefined.pem
+  }
   fs.mkdirSync(outputDir, { recursive: true });
-  // outputPath: 保存路径，以证书指纹命名
-  const outputPath = path.join(outputDir, `${summary.rootFingerprint}.pem`);
+  const outputPath = path.join(outputDir, `${fp}.pem`);
   fs.writeFileSync(outputPath, certificateToPem(root), "utf8");
   return outputPath;
 }

@@ -31,6 +31,7 @@ const {
 } = require("./key-attestation");
 const { DEFAULT_TTL_MS, NonceStore } = require("./nonce-store");
 const { AuthError, JsonAuthStore, publicUser } = require("./auth-store");
+const { PublicError, extractErrorInfo, safeErrorStatus, safeErrorMessage, safeErrorCode } = require("./public-error");
 const {
   JsonPasswordRegistrationStore,
   PasswordRegistrationStoreError,
@@ -119,23 +120,9 @@ function createVerifierServer(options = {}) {
       return;
     }
 
-    // ---- GET /health - 健康检查 ----
+    // ---- GET /health - 健康检查 (M-11: minimal, 父提交语义) ----
     if (req.method === "GET" && pathname === "/health") {
-      sendJson(res, 200, {
-        ok: true,
-        circuit: "areajudge",
-        verifier: "groth16/snarkjs",
-        verificationKey: vkPath,
-        regexVerificationKey: regexVkPath,
-        passwordVerificationKey: passwordVkPath,
-        passwordVerificationKeySha256: fileSha256(passwordVkPath),
-        passwordRegistrationDb: passwordRegistrationStore.filePath,
-        passwordRegistrationCount: passwordRegistrationStore.count(),
-        nonceTtlMs: nonceStore.ttlMs,
-        pendingNonces: nonceStore.size(),
-        interactionLog: interactionLogger.filePath,
-        authDb: authStore.filePath,
-      });
+      sendJson(res, 200, { status: "ok" });
       return;
     }
 
@@ -187,7 +174,7 @@ function createVerifierServer(options = {}) {
           passwordCommitment: record.passwordCommitment,
           proofVerified: true,
           publicInputCount: normalized.publicSignals.length,
-          acceptedFormat: proofResult.acceptedFormat,
+          acceptedFormat: sanitizeProofFormat(proofResult.acceptedFormat),
           serverVerifyTimeMs,
           requestTimeMs: Date.now() - startedAt,
           proofVersion: record.proofVersion,
@@ -209,30 +196,17 @@ function createVerifierServer(options = {}) {
           durationMs: Date.now() - startedAt,
         });
       } catch (error) {
-        const invalidJson = /^Invalid JSON:|^Request body too large/.test(error.message || "");
-        const statusCode = error.statusCode || (invalidJson ? 400 : 500);
-        const code =
-          error.code ||
-          (invalidJson ? "INVALID_REQUEST" : null) ||
-          (error instanceof AuthError && error.statusCode === 409 ? "USER_ID_EXISTS" : null) ||
-          (error instanceof PasswordRegistrationStoreError
-            ? "PASSWORD_REGISTRATION_DB_WRITE_FAILED"
-            : "PASSWORD_REGISTRATION_FAILED");
-        const response = {
-          success: false,
-          code,
-          error: error.message || String(error),
-        };
+        const errMsg = safeErrorMessage(error);
+        const invalidJson = /^Invalid JSON:|^Request body too large/.test(errMsg);
+        const statusCode = invalidJson ? 400 : safeErrorStatus(error);
+        const code = safeErrorCode(error) !== "UNKNOWN" ? safeErrorCode(error) : "PASSWORD_REGISTRATION_FAILED";
+        const response = { success: false, code, error: errMsg };
         sendJson(res, statusCode, response);
         interactionLogger.log({
           type: "password.register",
           request: requestMeta(req, requestId, pathname),
           requestSummary,
-          responseSummary: {
-            success: false,
-            code,
-            error: response.error,
-          },
+          responseSummary: { success: false, code, error: response.error },
           statusCode,
           durationMs: Date.now() - startedAt,
         });
@@ -262,10 +236,10 @@ function createVerifierServer(options = {}) {
           circuitVersion: record.circuitVersion,
         });
       } catch (error) {
-        sendJson(res, error.statusCode || 500, {
+        sendJson(res, safeErrorStatus(error), {
           success: false,
-          code: error.code || "PASSWORD_LOGIN_PARAMETERS_FAILED",
-          message: error.message || String(error),
+          code: safeErrorCode(error) !== "UNKNOWN" ? safeErrorCode(error) : "PASSWORD_LOGIN_PARAMETERS_FAILED",
+          message: safeErrorMessage(error),
         });
       }
       return;
@@ -297,7 +271,7 @@ function createVerifierServer(options = {}) {
         try {
           auth = authStore.loginPasswordUser(normalized.userId, { createIfMissing: true });
         } catch (error) {
-          if (error instanceof AuthError && error.statusCode === 401) {
+          if (extractErrorInfo(error) !== null && safeErrorStatus(error) === 401) {
             throw passwordRegistrationError(
               401,
               "INVALID_CREDENTIALS",
@@ -330,15 +304,11 @@ function createVerifierServer(options = {}) {
           durationMs: Date.now() - startedAt,
         });
       } catch (error) {
-        const invalidJson = /^Invalid JSON:|^Request body too large/.test(error.message || "");
-        const statusCode = error.statusCode || (invalidJson ? 400 : 500);
-        const code = error.code || (invalidJson ? "INVALID_REQUEST" : "PASSWORD_LOGIN_FAILED");
-        const message = error.message || String(error);
-        sendJson(res, statusCode, {
-          success: false,
-          code,
-          message,
-        });
+        const errMsg = safeErrorMessage(error);
+        const invalidJson = /^Invalid JSON:|^Request body too large/.test(errMsg);
+        const statusCode = invalidJson ? 400 : safeErrorStatus(error);
+        const code = safeErrorCode(error) !== "UNKNOWN" ? safeErrorCode(error) : (invalidJson ? "INVALID_REQUEST" : "PASSWORD_LOGIN_FAILED");
+        sendJson(res, statusCode, { success: false, code, message: errMsg });
         interactionLogger.log({
           type: "password.login",
           request: requestMeta(req, requestId, pathname),
@@ -351,35 +321,21 @@ function createVerifierServer(options = {}) {
       return;
     }
 
-    // ---- GET /logs/interactions - 查看交互日志 ----
+    // ---- GET /logs/interactions - 已禁用 (M-11: 无 operator 授权模型) ----
     if (req.method === "GET" && pathname === "/logs/interactions") {
-      const limit = Number(new URL(req.url, "http://localhost").searchParams.get("limit") || 50);
-      sendJson(res, 200, {
-        logPath: interactionLogger.filePath,
-        entries: interactionLogger.recent(limit),
-      });
+      sendJson(res, 404, { error: "Not found" });
       return;
     }
 
-    // ---- GET /stats/performance - 性能统计 ----
+    // ---- GET /stats/performance - 已禁用 (M-11) ----
     if (req.method === "GET" && pathname === "/stats/performance") {
-      const limit = Number(new URL(req.url, "http://localhost").searchParams.get("limit") || 200);
-      sendJson(res, 200, buildPerformanceStats(interactionLogger.recent(limit)));
+      sendJson(res, 404, { error: "Not found" });
       return;
     }
 
-    // ---- GET /reports/latest - 实验报告导出 ----
-    // 支持 ?format=md 导出 Markdown
+    // ---- GET /reports/latest - 已禁用 (M-11) ----
     if (req.method === "GET" && pathname === "/reports/latest") {
-      const url = new URL(req.url, "http://localhost");
-      const limit = Number(url.searchParams.get("limit") || 200);
-      const report = buildExperimentReport(interactionLogger.recent(limit), { limit });
-      if (url.searchParams.get("format") === "md") {
-        res.writeHead(200, { "Content-Type": "text/markdown; charset=utf-8" });
-        res.end(reportToMarkdown(report));
-      } else {
-        sendJson(res, 200, report);
-      }
+      sendJson(res, 404, { error: "Not found" });
       return;
     }
 
@@ -511,7 +467,7 @@ function createVerifierServer(options = {}) {
         });
       } catch (error) {
         const attestationDebug = summarizeFailedKeyRegistrationAttestation(body);
-        const statusCode = error instanceof AuthError ? error.statusCode : error.statusCode || 500;
+        const statusCode = safeErrorStatus(error);
         sendJson(res, statusCode, errorPayload(error, "KEY_REGISTER_FAILED", {
           attestation: attestationDebug,
         }));
@@ -521,7 +477,7 @@ function createVerifierServer(options = {}) {
           requestSummary: body ? summarizeKeyRegistrationRequest(body) : null,
           responseSummary: {
             valid: false,
-            error: error.message || String(error),
+            error: safeErrorMessage(error),
             userId: keyRegisterUser?.id || null,
             username: keyRegisterUser?.username || null,
             attestation: attestationDebug,
@@ -536,14 +492,12 @@ function createVerifierServer(options = {}) {
     // ---- GET/POST /nonce - 获取防重放用 server nonce ----
     if ((req.method === "GET" || req.method === "POST") && pathname === "/nonce") {
       const issued = nonceStore.issue();
-      const response = {
+      sendJson(res, 200, {
         ...issued,
-      };
-      sendJson(res, 200, response);
+      });
       interactionLogger.log({
         type: "nonce.issue",
         request: requestMeta(req, requestId, pathname),
-        response,
         statusCode: 200,
         durationMs: Date.now() - startedAt,
       });
@@ -565,25 +519,28 @@ function createVerifierServer(options = {}) {
         const publicInputCountValid = publicSignals.length === 1;
         const proofResult = await verifyProofPayload(regexVerificationKey, payload);
         let proofValidByVerifier = proofResult.valid;
-        let acceptedFormat = proofResult.acceptedFormat;
-        let attempts = proofResult.attempts;
+        let finalAcceptedFormat = sanitizeProofFormat(proofResult.acceptedFormat);
+        let finalAttempts = sanitizeAttempts(proofResult.attempts);
+
         if (!proofValidByVerifier && publicInputCountValid) {
           const arkworksResult = await verifyRegexRecordWithArkworks({
             proof: payload.proof ?? payload.proofResult?.proof,
             inputs: publicSignals,
             publicSignals,
           });
-          attempts = [
-            ...attempts,
-            {
-              format: arkworksResult.format,
-              valid: arkworksResult.valid,
-              ...(arkworksResult.error ? { error: arkworksResult.error } : {}),
-            },
-          ];
+          // M-11: Arkworks fallback 保留末尾槽位
+          // 主 verifier 最多保留前 4 条 + Arkworks 占第 5 位
+          const arkAttempt = { format: sanitizeProofFormat(arkworksResult.format), valid: !!arkworksResult.valid, error: arkworksResult.valid ? undefined : "Verification failed" };
+          const out = [];
+          const primaryLimit = MAX_PUBLIC_ATTEMPTS - 1; // 4
+          for (let i = 0; i < primaryLimit && i < finalAttempts.length; i++) {
+            out.push(finalAttempts[i]);
+          }
+          out.push(arkAttempt);
+          finalAttempts = out;
           if (arkworksResult.valid) {
             proofValidByVerifier = true;
-            acceptedFormat = arkworksResult.format;
+            finalAcceptedFormat = sanitizeProofFormat(arkworksResult.format);
           }
         }
         const proofValid = proofValidByVerifier && publicInputCountValid;
@@ -593,21 +550,13 @@ function createVerifierServer(options = {}) {
           proofValid,
           recordCommitment: publicSignals[0] || null,
           publicInputCount: publicSignals.length,
-          acceptedFormat,
-          attempts,
+          acceptedFormat: finalAcceptedFormat,
+          attempts: finalAttempts,
           reason: publicInputCountValid ? null : "regex_record proof must have exactly one public input",
-          artifacts: {
-            client: payload.clientArtifacts || payload.artifacts?.client || null,
-            server: {
-              regexRecordZkeySha256: fileSha256(defaultRegexRecordZkeyPath()),
-              regexRecordVerificationKeySha256: fileSha256(regexVkPath),
-            },
-          },
           user: {
             id: user.id,
             username: user.username,
           },
-          clientMetrics: payload.metrics || payload.clientMetrics || null,
         };
 
         sendJson(res, 200, result);
@@ -620,7 +569,7 @@ function createVerifierServer(options = {}) {
           durationMs: Date.now() - startedAt,
         });
       } catch (error) {
-        const status = error instanceof AuthError ? error.statusCode : 400;
+        const status = extractErrorInfo(error) !== null ? safeErrorStatus(error) : 500;
         const errorResponse = errorPayload(error, "REGEX_PROOF_VERIFY_FAILED");
         sendJson(res, status, errorResponse);
         interactionLogger.log({
@@ -659,7 +608,7 @@ function createVerifierServer(options = {}) {
         // activeKey: 用户当前注册的活跃硬件密钥
         const activeKey = authStore.activeKeyForUser(user.id);
         if (!activeKey) {
-          throw new AuthError(403, "Current user has no registered active public key");
+          throw new AuthError("FORBIDDEN", "Current user has no registered active public key");
         }
 
         // payload: 客户端上传的完整 JSON 请求体
@@ -673,7 +622,7 @@ function createVerifierServer(options = {}) {
         // M-01: 强制 Location proof 公开输入数量恰好为 37，
         // 防止尾部零截断或其他数量错误绕过验证。
         if (publicSignals.length !== 37) {
-          throw new Error(
+          throw new AuthError("PROOF_INPUT_COUNT",
             `Location proof requires exactly 37 public inputs, got ${publicSignals.length}`
           );
         }
@@ -695,11 +644,13 @@ function createVerifierServer(options = {}) {
         // nonceResult: { checked, valid, consumed, nonce, reason? }
         const nonceResult = verifyNonceForProof(nonceStore, signatureResult, proofResult);
 
-        // result: 组装后的完整验证结果对象
+        // result: 组装后的完整验证结果对象 (M-11: sanitized attempts)
         const result = {
-          ...proofResult,
-          // proofValid: proof 本身是否有效（独立于签名/nonce）
+          valid: proofResult.valid,
           proofValid: proofResult.valid,
+          publicInputCount: proofResult.publicInputCount ?? null,
+          acceptedFormat: sanitizeProofFormat(proofResult.acceptedFormat),
+          attempts: sanitizeAttempts(proofResult.attempts),
           user: {
             id: user.id,
             username: user.username,
@@ -708,8 +659,6 @@ function createVerifierServer(options = {}) {
           },
           signature: signatureResult,
           nonce: nonceResult,
-          // clientMetrics: 客户端上报的性能指标（如 proof 生成耗时）
-          clientMetrics: payload.metrics || payload.clientMetrics || null,
           // valid 整体判定：有签名字段时三者都必须通过，无签名字段时只关心 proof
           valid: signatureResult.checked
             ? proofResult.valid && signatureResult.valid && nonceResult.valid
@@ -729,9 +678,8 @@ function createVerifierServer(options = {}) {
           durationMs: Date.now() - startedAt,
         });
       } catch (error) {
-        // status: HTTP 状态码，认证错误取其 statusCode，其他默认为 400
-        const status = error instanceof AuthError ? error.statusCode : 400;
-        // errorResponse: 统一错误响应体 { valid, code, error, detail }
+        // M-11: 未知 verifier 异常 → 500，品牌错误保持原 status
+        const status = extractErrorInfo(error) !== null ? safeErrorStatus(error) : 500;
         const errorResponse = errorPayload(error, "PROOF_VERIFY_FAILED");
         sendJson(res, status, errorResponse);
         interactionLogger.log({
@@ -825,18 +773,14 @@ function summarizeFailedKeyRegistrationAttestation(body) {
   try {
     // summary: attestation 证书链摘要（不验证 root 是否可信）
     const summary = summarizeAttestationCertificateChain(certificateChain);
+    // M-11: 不返回 savedRejectedRootPath（绝对路径），仅返回摘要
     if (!summary.rootTrusted) {
-      return {
-        ...summary,
-        // savedRejectedRootPath: 未被信任的 root 证书保存路径
-        savedRejectedRootPath: saveRejectedAttestationRoot(certificateChain),
-      };
+      // 仍保存 rejected root 供本地 operator 调查，但不进入 HTTP 响应
+      saveRejectedAttestationRoot(certificateChain);
     }
     return summary;
-  } catch (error) {
-    return {
-      error: error.message || String(error),
-    };
+  } catch (_error) {
+    return null;
   }
 }
 
@@ -862,7 +806,6 @@ function compactVerifyResult(result) {
     nonceConsumed: result.nonce?.consumed ?? false,
     acceptedFormat: result.acceptedFormat ?? null,
     publicInputCount: result.publicInputCount ?? null,
-    clientMetrics: result.clientMetrics || null,
     user: result.user
       ? {
           username: result.user.username,
@@ -1121,10 +1064,7 @@ function validateCanonicalFieldElement(value, label) {
 }
 
 function passwordRegistrationError(statusCode, code, message) {
-  const error = new Error(message);
-  error.statusCode = statusCode;
-  error.code = code;
-  return error;
+  return new PublicError(code, message);
 }
 
 function passwordRegistrationRequestSummary(request) {
@@ -1194,6 +1134,57 @@ module.exports = {
 // 辅助函数
 // =============================================================================
 
+// ---- 安全映射 proof attempts (M-11) ----
+// Total function: 对任意 JS value 不抛出。不读 raw.length。
+// Format allowlist, max 5 slots, 不解锁 raw error/message
+// ---- 内部→公开 format 精确映射 (M-11) ----
+// 只接受生产代码中明确存在的固定字符串。无宽范匹配。
+const INTERNAL_TO_PUBLIC_FORMAT = Object.freeze({
+  // proof-format.js
+  snarkjs: "snarkjs",
+  mopro: "mopro",
+  mopro_g2_pair_swapped: "mopro",
+  mopro_g2_pair_swapped_with_z: "mopro",
+  mopro_g2_xy_swapped: "mopro",
+  mopro_g2_xy_pair_swapped: "mopro",
+  mopro_g2_xy_pair_swapped_with_z: "mopro",
+  // arkworks-regex-verifier.js
+  arkworks_mopro: "arkworks",
+});
+const MAX_PUBLIC_ATTEMPTS = 5;
+const MAX_PUBLIC_FORMAT_LEN = 32;
+
+function sanitizeProofFormat(value) {
+  try {
+    if (typeof value !== "string") return "unknown";
+    if (value.length > MAX_PUBLIC_FORMAT_LEN) return "unknown";
+    if (Object.prototype.hasOwnProperty.call(INTERNAL_TO_PUBLIC_FORMAT, value)) {
+      return INTERNAL_TO_PUBLIC_FORMAT[value];
+    }
+    return "unknown";
+  } catch (_) {}
+  return "unknown";
+}
+
+function sanitizeAttempts(raw) {
+  try {
+    const result = [];
+    for (let i = 0; i < MAX_PUBLIC_ATTEMPTS; i++) {
+      try {
+        const a = raw[i];
+        if (!a || (typeof a !== "object" && typeof a !== "function")) continue;
+        const format = sanitizeProofFormat(a.format);
+        let valid = false;
+        try { valid = a.valid === true; } catch (_) {}
+        result.push({ format, valid, error: valid ? undefined : "Verification failed" });
+      } catch (_) { /* skip individual attempt */ }
+    }
+    return result;
+  } catch (_) {
+    return [];
+  }
+}
+
 // ---- 从 URL 中提取 pathname ----
 function requestPathname(req) {
   return new URL(req.url, "http://localhost").pathname;
@@ -1234,7 +1225,7 @@ function readJsonBody(req) {
       size += chunk.length;
       // 超过限制立即断开连接，防止内存耗尽攻击
       if (size > MAX_BODY_BYTES) {
-        reject(new Error("Request body too large"));
+        reject(new AuthError("BAD_REQUEST", "Request body too large"));
         req.destroy();
         return;
       }
@@ -1246,8 +1237,8 @@ function readJsonBody(req) {
         // raw: 拼接后的完整 UTF-8 字符串
         const raw = Buffer.concat(chunks).toString("utf8");
         resolve(raw.length === 0 ? {} : JSON.parse(raw));
-      } catch (error) {
-        reject(new Error(`Invalid JSON: ${error.message || error}`));
+      } catch (_parseErr) {
+        reject(new AuthError("INVALID_REQUEST", "Invalid JSON body"));
       }
     });
 
@@ -1268,19 +1259,15 @@ function sendJson(res, status, payload) {
   res.end(JSON.stringify(payload, null, 2));
 }
 
-// ---- 发送 API 错误响应 ----
-// AuthError 保留其 statusCode，其他错误默认 500
+// ---- 发送 API 错误响应 (M-11) ----
+// 安全处理任意 JavaScript throwable：null、undefined、字符串、Proxy、异常 getter 等
+// 只有已知业务错误（AuthError、passwordRegistrationError 等）才返回公开消息
+// ---- 发送 API 错误响应 (M-11) ----
 function sendApiError(res, error, code, detail = null) {
-  const status = error instanceof AuthError ? error.statusCode : error.statusCode || 500;
-  sendJson(res, status, errorPayload(error, code, detail));
+  const status = safeErrorStatus(error);
+  sendJson(res, status, { valid: false, code, error: safeErrorMessage(error), detail });
 }
 
-// ---- 构造统一错误响应体 ----
 function errorPayload(error, code, detail = null) {
-  return {
-    valid: false,
-    code,
-    error: error.message || String(error),
-    detail,
-  };
+  return { valid: false, code, error: safeErrorMessage(error), detail };
 }

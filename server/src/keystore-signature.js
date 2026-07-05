@@ -132,7 +132,7 @@ function verifyKeystoreSignature(payload, proofPublicCommitment, options = {}) {
       keyObject,
       Buffer.from(signatureBase64, "base64")  // 签名值：Base64 解码后的 DER 编码
     );
-  } catch (error) {
+  } catch (_error) {
     return {
       checked: true,
       valid: false,
@@ -142,7 +142,7 @@ function verifyKeystoreSignature(payload, proofPublicCommitment, options = {}) {
       payloadVersion: parsedPayload.version,
       serverNonce: parsedPayload.server_nonce,
       keySource,
-      reason: error.message || String(error),
+      reason: "Signature verification failed",
     };
   }
 
