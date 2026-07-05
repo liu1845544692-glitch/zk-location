@@ -151,7 +151,7 @@ test("verify-proof rejects unauthenticated and unbound users", async (t) => {
   const noKey = await postJson(app, "/verify-proof", payload, unbound.body.token);
   assert.equal(noKey.status, 403);
   assert.equal(noKey.body.valid, false);
-  assert.match(noKey.body.error, /no registered active public key/);
+  assert.equal(noKey.body.error, "Forbidden");
 });
 
 test("verify-proof ignores client-supplied public key and uses registered key", async (t) => {

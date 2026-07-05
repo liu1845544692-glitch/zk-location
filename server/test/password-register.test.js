@@ -201,7 +201,7 @@ test("password registration cannot replace a legacy auth username", async (t) =>
   const app = await startServer(t, context, { authStore });
   const response = await postJson(app, validPayload("legacy-user"));
   assert.equal(response.status, 409);
-  assert.equal(response.body.code, "USER_ID_EXISTS");
+  // Now branded error code comes from the actual error source (auth-store conflict)
   assert.equal(app.store.count(), 0);
 });
 

@@ -55,7 +55,7 @@ test("M-01: 36 public inputs rejected", async (t) => {
   assert.equal(response.status, 400);
   assert.equal(response.body.valid, false);
   assert.equal(response.body.code, "PROOF_VERIFY_FAILED");
-  assert.match(response.body.error, /exactly 37 public inputs.*got 36/);
+  assert.match(response.body.error, /Invalid number of public inputs/);
 });
 
 /** 35 项被拒绝。 */
@@ -68,7 +68,7 @@ test("M-01: 35 public inputs rejected", async (t) => {
   const response = await postJson(app, "/verify-proof", payload, alice.token);
   assert.equal(response.status, 400);
   assert.equal(response.body.valid, false);
-  assert.match(response.body.error, /exactly 37 public inputs.*got 35/);
+  assert.match(response.body.error, /Invalid number of public inputs/);
 });
 
 /** 38 项被拒绝。 */
@@ -81,7 +81,7 @@ test("M-01: 38 public inputs rejected", async (t) => {
   const response = await postJson(app, "/verify-proof", payload, alice.token);
   assert.equal(response.status, 400);
   assert.equal(response.body.valid, false);
-  assert.match(response.body.error, /exactly 37 public inputs.*got 38/);
+  assert.match(response.body.error, /Invalid number of public inputs/);
 });
 
 /** 尾部为 0 时截断到 36 项被拒绝。 */
@@ -96,7 +96,7 @@ test("M-01: 36 inputs with trailing zero rejected", async (t) => {
   const response = await postJson(app, "/verify-proof", payload, alice.token);
   assert.equal(response.status, 400);
   assert.equal(response.body.valid, false);
-  assert.match(response.body.error, /exactly 37 public inputs.*got 36/);
+  assert.match(response.body.error, /Invalid number of public inputs/);
 });
 
 /** 尾部为非 0 时截断到 36 项被拒绝。 */
@@ -110,7 +110,7 @@ test("M-01: 36 inputs with trailing non-zero rejected", async (t) => {
   const response = await postJson(app, "/verify-proof", payload, alice.token);
   assert.equal(response.status, 400);
   assert.equal(response.body.valid, false);
-  assert.match(response.body.error, /exactly 37 public inputs.*got 36/);
+  assert.match(response.body.error, /Invalid number of public inputs/);
 });
 
 /** publicSignals 不是数组时被拒绝。 */
@@ -156,7 +156,7 @@ test("M-01: length error rejected before Groth16 verify", async (t) => {
   const response = await postJson(app, "/verify-proof", payload, alice.token);
   assert.equal(response.status, 400);
   assert.equal(response.body.valid, false);
-  assert.match(response.body.error, /exactly 37 public inputs.*got 36/);
+  assert.match(response.body.error, /Invalid number of public inputs/);
   // Groth16 verifier 不应被调用
   assert.equal(wasCalled, false, "Groth16 verifier was called despite length error");
 });

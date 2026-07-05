@@ -189,7 +189,7 @@ function assertInvalidCredentials(response) {
     {
       success: false,
       code: "INVALID_CREDENTIALS",
-      message: "Invalid userId or password",
+      message: "Invalid username or password",
     }
   );
 }

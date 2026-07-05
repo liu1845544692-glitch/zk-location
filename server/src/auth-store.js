@@ -20,11 +20,12 @@ const DEFAULT_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 // key registration nonce 默认有效期：5 分钟
 const DEFAULT_KEY_NONCE_TTL_MS = 5 * 60 * 1000;
 
-// ---- 认证专用错误类型，携带 HTTP 状态码 ----
-class AuthError extends Error {
-  constructor(statusCode, message) {
-    super(message);
-    this.statusCode = statusCode;
+const { PublicError } = require("./public-error");
+
+// ---- 认证专用错误类型 (M-11: 继承 PublicError, 固定定义) ----
+class AuthError extends PublicError {
+  constructor(defKey, internalMessage) {
+    super(defKey, internalMessage);
   }
 }
 
@@ -63,7 +64,7 @@ class JsonAuthStore {
     this.pruneExpired();
 
     if (this.db.users.some((user) => user.username === normalizedUsername)) {
-      throw new AuthError(409, "Username already exists");
+      throw new AuthError("CONFLICT", "Username already exists");
     }
 
     // salt: 16 字节随机盐值（base64url 编码），用于 scrypt 密码哈希
@@ -113,7 +114,7 @@ class JsonAuthStore {
       typeof user.passwordHash !== "string" ||
       user.passwordHash !== hashPassword(password, user.passwordSalt)
     ) {
-      throw new AuthError(401, "Invalid username or password");
+      throw new AuthError("INVALID_CREDENTIALS", "Invalid username or password");
     }
 
     // 登录时清空旧 active key，强制新 session 必须重新 attest key
@@ -134,7 +135,7 @@ class JsonAuthStore {
     const username = normalizePasswordUserId(userId);
     this.pruneExpired();
     if (this.db.users.some((user) => user.username === username)) {
-      throw new AuthError(409, "Username already exists");
+      throw new AuthError("CONFLICT", "Username already exists");
     }
     const user = this.createPasswordUser(username);
     this.db.users.push(user);
@@ -153,7 +154,7 @@ class JsonAuthStore {
       this.db.users.push(user);
     }
     if (!user || user.authMethod !== "password_commitment") {
-      throw new AuthError(401, "Invalid username or password");
+      throw new AuthError("INVALID_CREDENTIALS", "Invalid username or password");
     }
     this.clearActiveKeyForNewLogin(user);
     const session = this.issueSessionForUser(user.id);
@@ -186,7 +187,7 @@ class JsonAuthStore {
   authenticateAuthorizationHeader(header) {
     const token = parseBearerToken(header);
     if (!token) {
-      throw new AuthError(401, "Missing Authorization bearer token");
+      throw new AuthError("MISSING_TOKEN", "Missing Authorization bearer token");
     }
     return this.authenticateToken(token);
   }
@@ -202,13 +203,13 @@ class JsonAuthStore {
     // session: 数据库中匹配 tokenHash 的 session 记录
     const session = this.db.sessions.find((candidate) => candidate.tokenHash === tokenHash);
     if (!session) {
-      throw new AuthError(401, "Invalid or expired session token");
+      throw new AuthError("SESSION_INVALID", "Invalid or expired session token");
     }
 
     // user: session 所属的用户记录
     const user = this.db.users.find((candidate) => candidate.id === session.userId);
     if (!user) {
-      throw new AuthError(401, "Session user no longer exists");
+      throw new AuthError("SESSION_INVALID", "Session user no longer exists");
     }
 
     return {
@@ -278,7 +279,7 @@ class JsonAuthStore {
     // publicKeyInfo: 公钥格式验证结果 { asymmetricKeyType, namedCurve, fingerprint }
     const publicKeyInfo = validateEcPublicKey(publicKeyBase64);
     if (!Array.isArray(certificateChain)) {
-      throw new AuthError(400, "certificateChain must be an array when supplied");
+      throw new AuthError("BAD_REQUEST", "certificateChain must be an array when supplied");
     }
 
     // attestation: Key Attestation 验证结果，包含安全级别、授权列表、root 信任状态等
@@ -313,10 +314,7 @@ class JsonAuthStore {
         !attestation.authorization?.algorithmEc ||
         !attestation.authorization?.ecCurveP256)
     ) {
-      throw new AuthError(
-        400,
-        `Reject untrusted or incompatible key: rootTrusted=${attestation.rootTrusted}, keyMintSecurityLevel=${attestation.keyMintSecurityLevel}, purposeSign=${attestation.authorization?.purposeSign}, digestSha256=${attestation.authorization?.digestSha256}, algorithmEc=${attestation.authorization?.algorithmEc}, ecCurveP256=${attestation.authorization?.ecCurveP256}`
-      );
+      throw new AuthError("UNTRUSTED_ATTESTATION", "Untrusted or incompatible key");
     }
 
     // 消费 key registration nonce（防重放，成功后 nonce 被删除）
@@ -381,7 +379,7 @@ class JsonAuthStore {
     const user = this.requireUser(userId);
     const key = user.keys.find((candidate) => candidate.id === keyId);
     if (!key) {
-      throw new AuthError(404, "Key not found");
+      throw new AuthError("KEY_NOT_FOUND", "Key not found");
     }
     key.active = false;
     key.revokedAt = key.revokedAt || new Date(this.now()).toISOString();
@@ -410,7 +408,7 @@ class JsonAuthStore {
   // ---- 登出（按 token）----
   logoutToken(token) {
     if (!token) {
-      throw new AuthError(401, "Missing Authorization bearer token");
+      throw new AuthError("MISSING_TOKEN", "Missing Authorization bearer token");
     }
     this.pruneExpired();
     // tokenHash: 明文 token 的 SHA-256 哈希值
@@ -420,7 +418,7 @@ class JsonAuthStore {
     // 过滤掉匹配 tokenHash 的 session
     this.db.sessions = this.db.sessions.filter((candidate) => candidate.tokenHash !== tokenHash);
     if (before === this.db.sessions.length) {
-      throw new AuthError(401, "Invalid or expired session token");
+      throw new AuthError("SESSION_INVALID", "Invalid or expired session token");
     }
     this.save();
     return { revoked: true };
@@ -481,7 +479,7 @@ class JsonAuthStore {
   // 成功后删除 nonce（一次性使用）
   consumeKeyRegistrationNonce(userId, nonce) {
     if (!nonce) {
-      throw new AuthError(400, "Missing key registration nonce");
+      throw new AuthError("MISSING_NONCE", "Missing key registration nonce");
     }
 
     // index: 匹配的 nonce 在 keyRegistrationNonces 数组中的索引
@@ -489,7 +487,7 @@ class JsonAuthStore {
       (candidate) => candidate.nonce === nonce && candidate.userId === userId
     );
     if (index < 0) {
-      throw new AuthError(400, "Unknown, expired, or already used key registration nonce");
+      throw new AuthError("NONCE_INVALID", "Unknown, expired, or already used key registration nonce");
     }
 
     // record: 找到的 nonce 记录 { nonce, userId, issuedAt, expiresAt }
@@ -498,7 +496,7 @@ class JsonAuthStore {
       // 已过期：删除并报错
       this.db.keyRegistrationNonces.splice(index, 1);
       this.save();
-      throw new AuthError(400, "Expired key registration nonce");
+      throw new AuthError("NONCE_INVALID", "Expired key registration nonce");
     }
 
     // 成功消费：从数组中删除该 nonce（一次性使用）
@@ -509,7 +507,7 @@ class JsonAuthStore {
   requireUser(userId) {
     const user = this.db.users.find((candidate) => candidate.id === userId);
     if (!user) {
-      throw new AuthError(404, "User not found");
+      throw new AuthError("USER_NOT_FOUND", "User not found");
     }
     return user;
   }
@@ -545,21 +543,18 @@ function emptyDb() {
 // 规则：3-64 字符，只允许小写字母、数字、_、@、.、-
 function normalizeUsername(username) {
   if (typeof username !== "string") {
-    throw new AuthError(400, "username must be a string");
+    throw new AuthError("USERNAME_INVALID", "username must be a string");
   }
   const normalized = username.trim().toLowerCase();
   if (!/^[a-z0-9_@.-]{3,64}$/.test(normalized)) {
-    throw new AuthError(400, "username must be 3-64 chars: letters, numbers, _, @, ., -");
+    throw new AuthError("USERNAME_INVALID", "username must be 3-64 chars: letters, numbers, _, @, ., -");
   }
   return normalized;
 }
 
 function normalizePasswordUserId(userId) {
   if (typeof userId !== "string" || !/^[A-Za-z0-9_.@:-]{3,128}$/.test(userId)) {
-    throw new AuthError(
-      400,
-      "userId must be 3-128 characters: letters, numbers, _, ., @, :, or -"
-    );
+    throw new AuthError("INVALID_USER_ID", "userId must be 3-128 characters");
   }
   return userId.toLowerCase();
 }
@@ -567,7 +562,7 @@ function normalizePasswordUserId(userId) {
 // ---- 验证密码长度（8-256 字符）----
 function validatePassword(password) {
   if (typeof password !== "string" || password.length < 8 || password.length > 256) {
-    throw new AuthError(400, "password must be 8-256 chars");
+    throw new AuthError("PASSWORD_INVALID", "password must be 8-256 chars");
   }
 }
 
@@ -591,7 +586,7 @@ function hashToken(token) {
 // 返回 { asymmetricKeyType, namedCurve, fingerprint }
 function validateEcPublicKey(publicKeyBase64) {
   if (!publicKeyBase64) {
-    throw new AuthError(400, "Missing publicKey");
+    throw new AuthError("MISSING_PUBLIC_KEY", "Missing publicKey");
   }
 
   // keyObject: Node.js crypto 解析后的公钥对象
@@ -603,18 +598,18 @@ function validateEcPublicKey(publicKeyBase64) {
       format: "der",
       type: "spki",
     });
-  } catch (error) {
-    throw new AuthError(400, `Invalid publicKey SPKI DER: ${error.message || error}`);
+  } catch (_error) {
+    throw new AuthError("INVALID_PUBLIC_KEY", "Invalid public key SPKI DER");
   }
 
   if (keyObject.asymmetricKeyType !== "ec") {
-    throw new AuthError(400, "publicKey must be an EC key");
+    throw new AuthError("PUBLIC_KEY_NOT_EC", "publicKey must be an EC key");
   }
 
   // namedCurve: 椭圆曲线名称，"prime256v1" 即 NIST P-256
   const namedCurve = keyObject.asymmetricKeyDetails?.namedCurve || null;
   if (namedCurve !== "prime256v1") {
-    throw new AuthError(400, "publicKey must use P-256/prime256v1");
+    throw new AuthError("PUBLIC_KEY_NOT_P256", "publicKey must use P-256/prime256v1");
   }
 
   return {

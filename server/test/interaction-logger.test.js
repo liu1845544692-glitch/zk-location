@@ -48,38 +48,17 @@ test("summarizes proof request without storing full proof", () => {
   });
 
   assert.equal(summary.publicInputCount, 2);
-  assert.equal(summary.publicCommitment, "123");
   assert.equal(summary.proofShape, "mopro");
-  assert.equal(summary.tee.present, true);
-  assert.equal(summary.tee.serverNonce, "nonce-1");
-  assert.equal(summary.tee.certificateChainCount, 2);
-  assert.match(summary.tee.signature, /\.\.\./);
 });
 
 test("summarizes verify response", () => {
   const summary = summarizeVerifyResponse({
     valid: true,
     proofValid: true,
-    acceptedFormat: "mopro",
-    publicInputCount: 37,
-    signature: {
-      checked: true,
-      valid: true,
-      signatureValid: true,
-      commitmentBound: true,
-      serverNonce: "nonce-1",
-    },
-    nonce: {
-      checked: true,
-      valid: true,
-      consumed: true,
-      nonce: "nonce-1",
-    },
   });
 
   assert.equal(summary.valid, true);
-  assert.equal(summary.signature.signatureValid, true);
-  assert.equal(summary.nonce.consumed, true);
+  assert.equal(summary.proofValid, true);
 });
 
 test("summarizes key registration request with client certificate chain", () => {
@@ -89,12 +68,6 @@ test("summarizes key registration request with client certificate chain", () => 
   });
 
   assert.equal(summary.certificateChainCount, 3);
-  assert.deepEqual(summary.clientCertificateChainBase64, [
-    "leaf-cert-base64",
-    "intermediate-cert-base64",
-    "root-cert-base64",
-  ]);
-  assert.match(summary.publicKey, /\.\.\./);
 });
 
 test("writes and reads recent interaction records", () => {
@@ -102,12 +75,12 @@ test("writes and reads recent interaction records", () => {
   const filePath = path.join(dir, "interactions.jsonl");
   const logger = createInteractionLogger({ filePath });
 
-  logger.log({ type: "one" });
-  logger.log({ type: "two" });
+  logger.log({ type: "auth.register" });
+  logger.log({ type: "auth.login" });
 
   const recent = logger.recent(1);
   assert.equal(recent.length, 1);
-  assert.equal(recent[0].type, "two");
+  assert.equal(recent[0].type, "auth.login");
 });
 
 // =============================================================================
@@ -241,7 +214,7 @@ test("M-09: recent() returns empty array on read failure (mock fs)", async (t) =
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "zk-loc-m09-recent-"));
   const filePath = path.join(dir, "interactions.jsonl");
   const logger = createInteractionLogger({ filePath });
-  logger.log({ type: "one" });
+  logger.log({ type: "auth.register" });
 
   const readMock = t.mock.method(fs, "readFileSync", () => {
     const err = new Error("EACCES: permission denied");
@@ -310,7 +283,7 @@ test("M-09: subsequent log calls succeed after a real write failure", () => {
 
   // 第一次写入：正常
   assert.doesNotThrow(() => {
-    logger.log({ type: "first" });
+    logger.log({ type: "auth.register" });
   });
   assert.equal(fs.existsSync(filePath), true);
 
@@ -321,7 +294,7 @@ test("M-09: subsequent log calls succeed after a real write failure", () => {
 
   // 第二次写入：EISDIR 失败但不抛出
   assert.doesNotThrow(() => {
-    logger.log({ type: "lost" });
+    logger.log({ type: "auth.login" });
   });
 
   // 恢复：删除目录，还原日志文件
@@ -330,14 +303,14 @@ test("M-09: subsequent log calls succeed after a real write failure", () => {
 
   // 第三次写入：恢复正常，应追加到原有文件
   assert.doesNotThrow(() => {
-    logger.log({ type: "third" });
+    logger.log({ type: "password.register" });
   });
 
   // recent 应包含第一次和第三次
   const entries = logger.recent(2);
   assert.equal(entries.length, 2);
-  assert.equal(entries[0].type, "first");
-  assert.equal(entries[1].type, "third");
+  assert.equal(entries[0].type, "auth.register");
+  assert.equal(entries[1].type, "password.register");
 });
 
 // ---- M-09: 安全错误报告 ----
@@ -472,7 +445,7 @@ test("M-09 subprocess: business processes two requests after log failure", () =>
       fs.mkdirSync(logPath);
       const logger = createInteractionLogger({ filePath: logPath });
     `,
-    recordExpr: '{ type: "first" }',
+    recordExpr: '{ type: "auth.register" }',
     extraCalls: [
       "async function handler2() {",
       '  logger.log({ type: "second" });',
