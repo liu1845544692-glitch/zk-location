@@ -443,3 +443,43 @@ main cherry-pick commit: 283b689c877cbc7e363924035982fb0a864f1314
 
 上述 follow-up 不影响 M-11 的 Fixed 状态。
 ```
+
+### M-12
+
+```text
+ID: M-12
+状态: Fixed
+修复者: Claude
+独立审查者: Codex
+审查结论: PASS WITH FOLLOW-UP
+原始修复 commit: 489e6503bb615d8cd57b2db129ff92506590fdfd
+main cherry-pick commit: 3dee57dc3b4fdcca47d7c22b8bc8f901b0626700
+
+核心结果:
+- auth-store.js save() 使用 writeFileSync 指定 mode: 0o600；
+- interaction-logger.js appendFileSync 指定 mode: 0o600；
+- password-registration-store.js 已使用 mode: 0o600（无需修改）；
+- umask 0 和 umask 0022 下新文件均为 0600；
+- 多次写入、追加和重启后权限保持 0600；
+- 文件内容和 schema 不变；
+- 损坏 AuthStore 构造失败、logger 容错和 M-11 行为未回归。
+
+测试结果（main: 3dee57d）:
+- M-12 定向测试: 7/7 pass
+- auth-store 测试: 6/6 pass（1 个 M-14 fixture 预存失败）
+- interaction logger 测试: 18/18 pass
+- M-11 回归测试: 17/17 pass
+- password register/login 测试: 30/30 pass
+- proof attacks 测试: 9/9 pass
+- Location proof/M-01 测试: 11/11 pass
+- 完整 Server 测试: 107 tests, 106 pass, 1 fail（M-14 fixture 缺失）
+- 父提交（550b7e7）测试基线: 7 tests, 6 pass, 1 fail（相同 M-14 失败）
+- target 与 parent M-14 fixture 行为完全一致
+
+非阻断 follow-up:
+- F-M12-01：已有 0644 auth.json 和 interactions.jsonl 不会自动收紧；
+  部署升级时建议执行一次性 chmod 0600 或迁移操作。
+- F-M12-02：后续可补充显式 umask 0022 和已有 0644 文件行为的 committed regression tests。
+
+上述 follow-up 不影响 M-12 的 Fixed 状态。
+```
