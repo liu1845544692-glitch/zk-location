@@ -483,3 +483,45 @@ main cherry-pick commit: 3dee57dc3b4fdcca47d7c22b8bc8f901b0626700
 
 上述 follow-up 不影响 M-12 的 Fixed 状态。
 ```
+
+### M-14
+
+```text
+ID: M-14
+状态: Fixed
+修复者: Claude
+独立审查者: Codex
+审查结论: PASS WITH FOLLOW-UP
+原始修复 commit: 4cd61487a236ec8fb92fffdff903721b20eac3b1
+上一 rejected commit: 154f7fe91e4098759955416c7d2eed7873d7fcfe
+main cherry-pick commit: bf2af82b959f5f8de1115e3d97009de362168fc4
+
+核心结果:
+- 新增 Git 跟踪的 test fixture：server/test/fixtures/m14-rejected-attestation-root.pem；
+- fixture 为当前有效的 X.509 v3、EC P-256、自签名 CA，不含私钥；
+- fingerprint 68e26ae06bc95d71186eea65924ee0d7bde361c3f4d09a02b731079f28067cbd
+  不在默认 trusted set；
+- 测试前置断言验证 CA、自签名、有效期、曲线和 fingerprint 性质；
+- 负向替换验证确认非 CA leaf 证书会被前置断言拒绝；
+- 测试真实调用 registerUserKey() 并到达生产 trust comparison；
+- 实际拒绝原因为 "root is not trusted"；
+- 未修改生产代码、trust store、.gitignore 或其他审计项。
+
+测试结果（main: bf2af82）:
+- M-14 auth-store 定向: 7/7 pass
+- key-attestation: 3/3 pass
+- M-11 回归: 17/17 pass
+- M-12 回归: 7/7 pass
+- interaction logger: 18/18 pass
+- password register/login: 30/30 pass
+- proof attacks: 9/9 pass
+- 完整 Server 测试: 114/114 pass
+- 父提交（2baa86c）测试基线: 113/114 pass（旧 ignored fixture ENOENT）
+
+非阻断 follow-up:
+- F-M14-01：将关键负向替换矩阵固化为 committed regression tests。
+- F-M14-02：增加 fixture 可复现生成脚本和参数说明。
+- F-M14-03：额外断言 error instanceof AttestationError。
+
+上述 follow-up 不影响 M-14 的 Fixed 状态。
+```
