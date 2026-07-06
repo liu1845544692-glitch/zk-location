@@ -106,48 +106,7 @@ server/keys/areajudge_verification_key.json
 server/logs/interactions.jsonl
 ```
 
-启动服务后，另开一个终端实时查看：
-
-```bash
-cd server
-npm run logs
-```
-
-也可以通过 HTTP 查看最近记录：
-
-```bash
-curl http://127.0.0.1:3000/logs/interactions?limit=20
-```
-
-日志记录的是摘要，不保存完整 proof、完整签名或完整证书链。每条 `proof.verify` 会包含：
-
-- 客户端 IP、请求路径、耗时
-- `publicCommitment`
-- proof 格式和公开输入数量
-- Keystore payload 里的 `serverNonce`
-- `proofValid`
-- `signatureValid`
-- `commitmentBound`
-- nonce 是否 `consumed`
-- 最终 `valid`
-
-每条 `key.register` 会包含：
-
-- `userId` / `username`
-- `keyId`
-- `publicKeyFingerprint`
-- `certificateChainCount`
-- `attestation.verified`
-- `attestation.challengeMatched`
-- `attestation.attestationSecurityLevel`
-- `attestation.keyMintSecurityLevel`
-- `attestation.certificateChainVerified`
-- `attestation.rootTrusted`
-- `attestation.rootFingerprint`
-- `attestation.authorization.purposeSign`
-- `attestation.authorization.digestSha256`
-- `attestation.authorization.algorithmEc`
-- `attestation.authorization.ecCurveP256`
+HTTP 交互日志接口已在生产环境中禁用（未提供 operator 权限模型）。日志只保存固定字段（时间戳、事件类型、状态码、耗时），不保存完整 proof、签名、证书链、nonce、token 或客户端 IP。
 
 如果要换日志路径：
 
@@ -393,19 +352,6 @@ SnarkJS 标准结构：
   },
   "attempts": []
 }
-```
-
-查看服务端性能统计：
-
-```bash
-curl http://127.0.0.1:3000/stats/performance?limit=200
-```
-
-导出最近实验报告：
-
-```bash
-curl http://127.0.0.1:3000/reports/latest?limit=200
-curl http://127.0.0.1:3000/reports/latest?format=md
 ```
 
 错误响应统一为：

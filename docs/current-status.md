@@ -423,7 +423,14 @@ C = Poseidon(x, y, salt)
 - `GET|POST /nonce`
 - `POST /verify-proof`
 - `GET /health`
-- `GET /logs/interactions`
+- `GET /logs/interactions`（已禁用，返回 404）
+- `POST /verify-regex-proof`
+- `GET /password/login-parameters`
+- `POST /password/login`
+- `POST /auth/logout`
+- `GET /keys/active`
+- `GET /keys`
+- `POST /keys/revoke`
 
 服务端能力：
 
@@ -594,16 +601,7 @@ http://192.168.2.217:3000/verify-proof
 
 ### 8.2 查看服务端日志
 
-```bash
-cd server
-npm run logs
-```
-
-或：
-
-```bash
-curl http://127.0.0.1:3000/logs/interactions?limit=20
-```
+交互日志以 JSONL 格式持久化在 `server/logs/interactions.jsonl`。诊断 HTTP 接口已在生产环境中禁用。
 
 ### 8.3 Android 构建
 
@@ -614,40 +612,24 @@ ANDROID_HOME=/home/lyy/Android/Sdk ANDROID_SDK_ROOT=/home/lyy/Android/Sdk ./grad
 
 ## 9. 最近验证结果
 
-最近一次已通过：
+当前状态（2026-07）：
 
 ```text
-server npm test: 35 tests passed
-server npm run smoke: passed
+server node --test: 114/114 tests passed
+h3-converter cargo test: passed
+zk-location cargo test: passed
 Android assembleDebug: BUILD SUCCESSFUL
-2026-06-17 cleanup check: Android assembleDebug passed; debug APK no longer contains old assets/port_final.zkey
-2026-06-18 Android assembleDebug: BUILD SUCCESSFUL after adding Location Verify proof and moving Logout to the top bar
-2026-06-18 Android assembleDebug: BUILD SUCCESSFUL after removing AppHeader Ready/Working busy-state logic
-2026-06-18 Android assembleDebug: BUILD SUCCESSFUL after removing Android Server stats, Export report, Results Server/Stats/Report, and their Android helper logic
-2026-06-18 Android assembleDebug: BUILD SUCCESSFUL after restoring Location Sign commitment and Send proof to server without restoring stats/report/export UI
-2026-06-18 regex record snarkjs fixed-vector proof/verify: OK
-2026-06-18 h3-converter cargo test test_regex_record_commitment_vector: passed
-2026-06-18 zk-location cargo test test_generate_regex_record_circuit_input: passed
-2026-06-18 Android testDebugUnitTest assembleDebug: BUILD SUCCESSFUL
-2026-06-18 server npm test: 32 tests passed
-2026-06-18 Android testDebugUnitTest assembleDebug: BUILD SUCCESSFUL after removing Regex all proof UI/logic and adding record proof Arkworks->Rapidsnark local verify fallback
-2026-06-23 regex_record public input snarkjs fixed-vector proof/verify: OK, public input equals record commitment
-2026-06-23 h3-converter cargo test test_regex_record_commitment_vector: passed
-2026-06-23 zk-location cargo test test_generate_regex_record_circuit_input: passed
-2026-06-23 Android testDebugUnitTest assembleDebug: BUILD SUCCESSFUL after regenerating regex_record public-input wasm/zkey/native bindings
-2026-06-23 server npm test: 33 tests passed after adding /verify-regex-proof
-2026-06-23 /verify-regex-proof real regex_record proof smoke: valid=true, publicInputCount=1
-2026-06-23 Android testDebugUnitTest assembleDebug: BUILD SUCCESSFUL after adding explicit Send record proof to server and compact proof summaries
-2026-06-23 server npm test: 33 tests passed after expanding mopro G2 proof candidates for /verify-regex-proof
-2026-06-23 Android testDebugUnitTest assembleDebug: BUILD SUCCESSFUL after showing server regex proof attempts in Android summary
-2026-06-23 server node --check server/src/proof-format.js: passed after adding G2 z limb-swapped mopro candidates
-2026-06-23 server npm test: 33 tests passed after adding G2 z limb-swapped mopro candidates
-2026-06-23 service proof-format cross-check: snarkjs proof with all G2 Fp2 limbs reversed verified as acceptedFormat=mopro_g2_pair_swapped_with_z
-2026-06-24 cargo build --release --bin verify_regex_record_arkworks: passed
-2026-06-24 server npm test: 35 tests passed after adding Arkworks fallback integration and artifact hash diagnostics
-2026-06-24 Android Gradle build not rerun in sandbox: current environment blocks Gradle daemon socket creation and rejected unsandboxed /home/lyy/.gradle access
-2026-06-24 artifact hash check: `circuits/regex_record_final.zkey`, Android source asset, and current `app-debug.apk` asset all have SHA-256 `7d27d9da9b9dcfddd03fae674b74990c83f97342a053b9fd98d3b4f760f69f6d`; user screenshot still reports Client zkey `0450ccaf...9484bedf`, indicating a stale/different APK on device
-2026-06-30 password server-salt device test: registration HTTP 201; native/Kotlin/server proof verify passed; same-device login passed; deleting only the test user's local encrypted salt file did not block HTTP 200 login; login still passed after server restart; wrong password and unknown user returned HTTP 401; no OOM/ANR/crash/native crash/Rust panic observed
+
+M-11 诊断信息泄露: Fixed (PASS WITH FOLLOW-UP)
+M-12 文件权限: Fixed (PASS WITH FOLLOW-UP)
+M-14 缺少 test fixture: Fixed (PASS WITH FOLLOW-UP)
+M-01/M-03/M-04/M-05/M-09: Fixed
+
+历史里程碑:
+- 2026-06-30: password server-salt 跨设备登录真机验证通过
+- 2026-06-24: Arkworks fallback + artifact hash 诊断完成
+- 2026-06-23: regex record public input 约束和 mopro G2 候选修复完成
+- 2026-06-18: Android 服务端 stats/report 入口清理完成
 ```
 
 ## 10. 还需要改进的地方
@@ -695,12 +677,12 @@ Android assembleDebug: BUILD SUCCESSFUL
    - `POST /auth/login` 成功后会清空该用户旧的 active key，要求本次登录重新执行 `Generate new key and bind`。
    - 仍使用 JSON 文件存储，SQLite 尚未实现。
 
-5. 实验报告导出功能。
-   - 服务端仍保留 `GET /reports/latest` 和 `GET /reports/latest?format=md`。
+5. 实验报告导出功能（已禁用）。
+   - 服务端 `/reports/latest` 已在 M-11 安全修复中禁用（返回 404）。
    - 2026-06-18：Android 端 `Export report` 按钮、Report 结果页和对应 helper/state 已删除。
 
-6. 性能统计功能。
-   - 服务端仍保留 `GET /stats/performance`。
+6. 性能统计功能（已禁用）。
+   - 服务端 `/stats/performance` 已在 M-11 安全修复中禁用（返回 404）。
    - 2026-06-18：Android 端 `Server stats` 按钮、Stats 结果页、本地 proof/send 采样状态和对应 helper 已删除。
 
 7. 协议文档。
@@ -766,8 +748,9 @@ Android assembleDebug: BUILD SUCCESSFUL
    - 例如：GNSS 改变后必须重新生成 proof；proof 改变后必须重新签名。
 
 4. 交互日志和论文材料。
-   - 当前 `npm run logs` 已能查看关键交互。
-   - 服务端仍可通过 stats/report 接口或脚本支持实验材料整理。
+   - 当前 `npm run logs`（直接读取本地 interactions.jsonl）已能查看关键交互。
+   - HTTP 交互日志、性能统计和实验报告接口已在 M-11 中禁用（返回 404）；
+     需要使用直接文件读取和离线脚本整理实验材料。
    - Android 端 report/stats 入口已删除，当前手机 UI 不再承载实验报告导出。
 
 ### P2：实验展示和工程体验改进

@@ -380,23 +380,25 @@ Prefer: return=minimal
 
 ### `GET /health`
 
-返回服务端状态、verification key、interaction log 和 auth DB 路径。
+返回最小健康状态：
 
-### `GET /logs/interactions?limit=50`
+```json
+{"status":"ok"}
+```
 
-返回最近交互日志摘要。
+不返回内部路径、密钥指纹、运行指标或诊断信息。
 
-### `GET /stats/performance?limit=200`
+### `GET /logs/interactions?limit=50`（已禁用）
 
-返回 key register、proof verify、签名成功、nonce 消费等统计。
+诊断交互日志接口已在 M-11 安全修复中禁用。
 
-### `GET /reports/latest?limit=200`
+### `GET /stats/performance?limit=200`（已禁用）
 
-返回最新实验报告 JSON。
+性能统计接口已在 M-11 安全修复中禁用。
 
-### `GET /reports/latest?format=md&limit=200`
+### `GET /reports/latest?limit=200`（已禁用）
 
-返回 Markdown 格式实验报告。
+实验报告导出接口已在 M-11 安全修复中禁用。
 
 ## 10. 错误响应
 

@@ -708,9 +708,6 @@ function createVerifierServer(options = {}) {
         "POST /keys/register-nonce",
         "POST /keys/register",
         "POST /keys/revoke",
-        "GET /logs/interactions?limit=50",
-        "GET /stats/performance?limit=200",
-        "GET /reports/latest?limit=200",
       ],
     });
   });

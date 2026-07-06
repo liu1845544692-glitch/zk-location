@@ -22,9 +22,9 @@
 | `POST /keys/revoke` | 调试 | 是 | 撤销指定 key |
 | `GET/POST /nonce` | Android | 否 | 获取 proof 签名防重放 nonce |
 | `POST /verify-proof` | Android | 是 | 提交 proof、公开输入和 Keystore 签名给服务端验证 |
-| `GET /logs/interactions` | 调试 | 否 | 查看最近交互日志 |
-| `GET /stats/performance` | Android/调试 | 否 | 查看性能统计 |
-| `GET /reports/latest` | Android/调试 | 否 | 导出实验报告 |
+| `GET /logs/interactions` | — | — | 已禁用 |
+| `GET /stats/performance` | — | — | 已禁用 |
+| `GET /reports/latest` | — | — | 已禁用 |
 
 ## 2. 登录接口
 
