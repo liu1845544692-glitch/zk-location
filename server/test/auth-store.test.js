@@ -17,6 +17,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { AuthError, JsonAuthStore, validateEcPublicKey } = require("../src/auth-store");
+const { loadTrustedRootFingerprints } = require("../src/key-attestation");
 
 test("registers and logs in user with bearer session", () => {
   // store：隔离的 JSON auth store。
@@ -131,11 +132,46 @@ test("rejects untrusted Android attestation root", () => {
     attestationTrustRootsPath: trustRootsPath,
   });
   const registered = store.registerUser("alice", "correct-password");
+  // M-14 committed test fixture: self-signed EC P-256 cert, not in production trust store
   const rejectedRootPath = path.resolve(
     __dirname,
-    "../logs/rejected-attestation-roots/51d496ad4664190fbdaf1ad987278efa35d6fbf52e50a9c34ded8395477ede5c.pem"
+    "fixtures/m14-rejected-attestation-root.pem"
   );
-  const certificate = new crypto.X509Certificate(fs.readFileSync(rejectedRootPath, "utf8"));
+  const pem = fs.readFileSync(rejectedRootPath, "utf8");
+  const certificate = new crypto.X509Certificate(pem);
+  const trustedFingerprints = loadTrustedRootFingerprints(trustRootsPath);
+
+  // ---- M-14 fixture 前置性质断言 ----
+  // 单一证书，不含私钥
+  const certBlocks = pem.match(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g) ?? [];
+  assert.equal(certBlocks.length, 1, "fixture must contain exactly one certificate");
+  assert.doesNotMatch(pem, /PRIVATE KEY/);
+
+  // 当前有效
+  const validFrom = Date.parse(certificate.validFrom);
+  const validTo = Date.parse(certificate.validTo);
+  const now = Date.now();
+  assert.ok(Number.isFinite(validFrom) && validFrom <= now, "certificate is currently valid (validFrom)");
+  assert.ok(Number.isFinite(validTo) && now <= validTo, "certificate is currently valid (validTo)");
+
+  // CA 自签名
+  assert.equal(certificate.ca, true);
+  assert.equal(certificate.subject, certificate.issuer);
+  assert.equal(certificate.verify(certificate.publicKey), true);
+
+  // EC P-256
+  assert.equal(certificate.publicKey.asymmetricKeyType, "ec");
+  assert.equal(certificate.publicKey.asymmetricKeyDetails?.namedCurve, "prime256v1");
+
+  // 固定预期 fingerprint
+  const fingerprint = certificate.fingerprint256.replaceAll(":", "").toLowerCase();
+  const expectedFingerprint = "68e26ae06bc95d71186eea65924ee0d7bde361c3f4d09a02b731079f28067cbd";
+  assert.equal(fingerprint, expectedFingerprint, "fixture fingerprint matches expected value");
+
+  // 不在测试 trusted set 中
+  assert.equal(trustedFingerprints.has(fingerprint), false, "fixture root is NOT trusted");
+
+  // ---- 生产路径：untrusted root 必须被拒绝 ----
   const nonce = store.issueKeyRegistrationNonce(registered.user.id);
 
   assert.throws(
