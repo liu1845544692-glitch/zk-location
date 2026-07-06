@@ -34,7 +34,6 @@ const { AuthError, JsonAuthStore, publicUser } = require("./auth-store");
 const { PublicError, extractErrorInfo, safeErrorStatus, safeErrorMessage, safeErrorCode } = require("./public-error");
 const {
   JsonPasswordRegistrationStore,
-  PasswordRegistrationStoreError,
 } = require("./password-registration-store");
 const {
   createInteractionLogger,
@@ -44,12 +43,6 @@ const {
   summarizeProofRequest,
   summarizeVerifyResponse,
 } = require("./interaction-logger");
-const {
-  buildExperimentReport,
-  buildPerformanceStats,
-  reportToMarkdown,
-} = require("./report-generator");
-
 // 默认监听端口
 const DEFAULT_PORT = 3000;
 // HTTP body 最大 1MB（防止内存耗尽）
