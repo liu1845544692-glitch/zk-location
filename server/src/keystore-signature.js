@@ -68,10 +68,11 @@ function verifyKeystoreSignature(payload, proofPublicCommitment, options = {}) {
     payload.certificateChain ??
     payload.certificateChainBase64;
 
-  // ---- 2. 没有任何签名字段 → 跳过签名验证 ----
-  // hasAnySignatureField: 只要 4 个关键字段中有任意一个不为空，就认为客户端提供了签名字段
+  // ---- 2. 请求没有任何签名字段 → 报告缺少设备签名 ----
+  // hasAnySignatureField: 只检查客户端请求字段；服务端已绑定的 trusted public key
+  // 不能让一个未携带签名的请求被视为已进入签名校验。
   const hasAnySignatureField = Boolean(
-    signedPayload || signatureBase64 || publicKeyBase64 || certificateChainBase64
+    signedPayload || signatureBase64 || clientPublicKeyBase64 || certificateChainBase64
   );
   if (!hasAnySignatureField) {
     return {

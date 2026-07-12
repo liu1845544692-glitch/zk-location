@@ -16,7 +16,8 @@
 //   7. POST /verify-regex-proof     - 发送 Regex record ZK proof
 //
 // /verify-proof 的验证链路：
-//   session token → active key → proof 验证 → 签名验证 → nonce 消费
+//   session token → active key → proof 验证 → 设备签名与 commitment 绑定验证 → nonce 消费
+//   位置 proof 必须携带设备签名；proof、签名、commitment 绑定和 nonce 全部通过才接受。
 
 const fs = require("node:fs");
 const http = require("node:http");
@@ -595,8 +596,8 @@ function createVerifierServer(options = {}) {
     //   5. 消费 nonce（防重放）
     //
     // 整体 valid 判定逻辑：
-    //   - 如果没有签名字段 → valid 只取决于 proof 验证结果
-    //   - 如果有签名字段 → valid = proof AND signature AND nonce 三者都通过
+    //   proof、设备签名、commitment 绑定和 nonce 全部通过才接受。
+    //   nonce 仅在 proof 和签名均有效时消费。
     if (req.method === "POST" && pathname === "/verify-proof") {
       let payload = null;
       try {
@@ -644,9 +645,16 @@ function createVerifierServer(options = {}) {
         // nonceResult: { checked, valid, consumed, nonce, reason? }
         const nonceResult = verifyNonceForProof(nonceStore, signatureResult, proofResult);
 
+        // finalValid: proof、签名/commitment 绑定和 nonce 都通过时才整体有效。
+        const finalValid =
+          proofResult.valid &&
+          signatureResult.checked &&
+          signatureResult.valid &&
+          nonceResult.valid;
+
         // result: 组装后的完整验证结果对象 (M-11: sanitized attempts)
         const result = {
-          valid: proofResult.valid,
+          valid: finalValid,
           proofValid: proofResult.valid,
           publicInputCount: proofResult.publicInputCount ?? null,
           acceptedFormat: sanitizeProofFormat(proofResult.acceptedFormat),
@@ -659,10 +667,6 @@ function createVerifierServer(options = {}) {
           },
           signature: signatureResult,
           nonce: nonceResult,
-          // valid 整体判定：有签名字段时三者都必须通过，无签名字段时只关心 proof
-          valid: signatureResult.checked
-            ? proofResult.valid && signatureResult.valid && nonceResult.valid
-            : proofResult.valid,
         };
 
         // responseBody: 根据 ?compact=1 决定返回精简还是完整结果
@@ -1085,10 +1089,10 @@ function elapsedMonotonicMs(started) {
 }
 
 // ---- nonce 消费策略 ----
-// 仅在 proof 和签名都通过后才消费 nonce
-// 即使攻击者反复发送无效请求也不会消耗有效 nonce
+// 仅在 proof、设备签名和 commitment 绑定都通过后才消费 nonce。
+// 即使攻击者反复发送无效请求也不会消耗有效 nonce。
 function verifyNonceForProof(nonceStore, signatureResult, proofResult) {
-  // 没有签名字段 → 跳过 nonce 检查
+  // 缺少设备签名字段 → nonce 无效且不消费
   if (!signatureResult.checked) {
     return {
       checked: false,
