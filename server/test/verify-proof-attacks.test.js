@@ -53,6 +53,51 @@ test("verify-proof accepts valid payload and rejects replayed nonce", async (t) 
   assert.match(replay.body.reason, /already used nonce/);
 });
 
+test("verify-proof rejects missing Keystore signature and preserves nonce", async (t) => {
+  const app = await startTestServer(t);
+  const alice = await registerAndBindKey(app, "alice");
+  const { proof, publicSignals } = await proofFixture();
+  const nonce = await getJson(app, "/nonce");
+  assert.equal(nonce.status, 200);
+
+  const unsignedPayload = {
+    proof,
+    inputs: [...publicSignals],
+    serverNonce: nonce.body.nonce,
+  };
+
+  const fullResponse = await postJsonFull(app, "/verify-proof", unsignedPayload, alice.token);
+  assert.equal(fullResponse.status, 200);
+  assert.equal(fullResponse.body.valid, false);
+  assert.equal(fullResponse.body.proofValid, true);
+  assert.equal(fullResponse.body.signature.checked, false);
+  assert.equal(fullResponse.body.signature.valid, false);
+  assert.equal(fullResponse.body.signature.commitmentBound, false);
+  assert.equal(fullResponse.body.nonce.consumed, false);
+  assert.match(fullResponse.body.signature.reason, /No Keystore signature/i);
+
+  const compactResponse = await postJson(app, "/verify-proof", unsignedPayload, alice.token);
+  assert.equal(compactResponse.status, 200);
+  assert.equal(compactResponse.body.valid, false);
+  assert.equal(compactResponse.body.proofValid, true);
+  assert.equal(compactResponse.body.signatureValid, false);
+  assert.equal(compactResponse.body.commitmentBound, false);
+  assert.equal(compactResponse.body.nonceConsumed, false);
+  assert.match(compactResponse.body.reason, /No Keystore signature/i);
+
+  const signedPayload = {
+    ...unsignedPayload,
+    tee: signPayload(alice.privateKey, publicSignals[0], nonce.body.nonce),
+  };
+  const accepted = await postJson(app, "/verify-proof", signedPayload, alice.token);
+  assert.equal(accepted.status, 200);
+  assert.equal(accepted.body.valid, true);
+  assert.equal(accepted.body.proofValid, true);
+  assert.equal(accepted.body.signatureValid, true);
+  assert.equal(accepted.body.commitmentBound, true);
+  assert.equal(accepted.body.nonceConsumed, true);
+});
+
 test("verify-proof rejects tampered public commitment", async (t) => {
   const app = await startTestServer(t);
   const alice = await registerAndBindKey(app, "alice");
@@ -345,8 +390,13 @@ async function postJson(app, path, body, token = null) {
   return requestJson(app, "POST", path, body, token);
 }
 
+/** POST JSON 并请求完整响应。 */
+async function postJsonFull(app, path, body, token = null) {
+  return requestJson(app, "POST", path, body, token, { preferMinimal: false });
+}
+
 /** 发送 HTTP JSON 请求并解析响应。 */
-function requestJson(app, method, requestPath, body = null, token = null) {
+function requestJson(app, method, requestPath, body = null, token = null, options = {}) {
   return new Promise((resolve, reject) => {
     // url：测试服务端上的目标 URL。
     const url = new URL(`${app.baseUrl}${requestPath}`);
@@ -362,7 +412,7 @@ function requestJson(app, method, requestPath, body = null, token = null) {
       headers: {
         "Content-Type": "application/json",
         Accept: "application/json",
-        Prefer: "return=minimal",
+        ...(options.preferMinimal === false ? {} : { Prefer: "return=minimal" }),
         Connection: "close",
         ...(requestBody ? { "Content-Length": Buffer.byteLength(requestBody) } : {}),
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
